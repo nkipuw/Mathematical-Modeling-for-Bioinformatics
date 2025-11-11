@@ -1,0 +1,509 @@
+---
+title: RBIF112 - Assignment 5
+author: "Author: Neshita Kipuw"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+---  
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+homedir <- "H:/My Drive/RBIF112/wk5/HW-files" # object containing a home directory path in R ( in this code chunk), and in python (The next code chunk).
+setwd(homedir)
+```
+<br>
+<br>
+
+# Question 1  
+Apply classification using logistic regression and naïve Bayes.  
+  
+## Data download  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# load packages
+library(TCGAbiolinks)
+library(EDASeq)
+library(tibble)
+
+# data download
+# 133 breast cancer and control samples from the TCGA-BRCA project
+# getProjectSummary() function returns information about what genomics data is
+# available for a specific project
+TCGAbiolinks:::getProjectSummary("TCGA-BRCA")
+
+# download and prepare target case
+# GDCquery() function grabs Transcriptome Profiling data from the TCGA-BRCA database
+# the Transcriptome data is passed onto the getResults() function that returns 
+# the file names and ids that can be downloaded.
+TargetSamples <- GDCquery(project = "TCGA-BRCA", 
+                         data.category = "Transcriptome Profiling", 
+                         data.type = "Gene Expression Quantification",
+                         workflow.type = "STAR - Counts")
+
+# obtain case information
+CaseInfo <- getResults(TargetSamples)#, cols = c("cases"))
+as_tibble(head(CaseInfo))
+
+# subset samples so that there is an equal number of cancer and control samples
+# 113 cancer and control data sets are downloaded
+dataPrimary_Target <- TCGAquery_SampleTypes(barcode = CaseInfo$cases, typesample = "TP") # primary tumor
+dataNormal_Target <- TCGAquery_SampleTypes(barcode = CaseInfo$cases, typesample = "NT") # normal tissue
+dataPrimary_Target <- dataPrimary_Target[1:113]
+dataNormal_Target <- dataNormal_Target[1:113]
+
+# downloaded samples of interest 
+TargetSamples <- GDCquery(project = "TCGA-BRCA",
+                             data.category = "Transcriptome Profiling",
+                             data.type = "Gene Expression Quantification",
+                             workflow.type = "STAR - Counts",
+                             barcode = c(dataPrimary_Target, dataNormal_Target))
+
+# Download the data (Note: Depending on your computer, you may not have enough RAM 
+# to process this amount of data. If this happens, please subset the data to 
+# include 50 cancer and 50 normal tissue samples)
+#GDCdownload(TargetSamples) ## ALREADY downloaded 226 files and about 960 MB of data ##
+
+```
+<br>  
+
+## Data Preparation (Normalization)  
+  
+The TCGAbiolinks package contains pre-scripted functions that handle the downloaded data and format it into a summarizedExperiment object. A new variable will contain all of the meta data, and the meta data that is associated with the raw data set.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+# access the downloaded data
+data <- GDCprepare(TargetSamples)
+# look at list
+assays(data)
+# look at column metadata
+as_tibble(colData(data))
+# look at row metadata
+as_tibble(rowData(data))
+# look at gene_type
+table(rowData(data)$gene_type)
+
+
+# grab the protein_coding data from SummarizedExperiment
+SEcoding <- data[rowData(data)$ gene_type == "protein_coding", ]
+# The following function will return the data from specified slots in 
+# the summarizedExperiment object
+dataPrep_Coding <- TCGAanalyze_Preprocessing(object = SEcoding, 
+                                             cor.cut = 0.6,
+                                             datatype = "fpkm_unstrand")
+
+# data (quantile) normalization
+# TCGAanalyze_Normalization() function is obtained from TCGAbiolinks package and
+# will perform normalization, then filter samples with TCGAanalyze_Filtering()
+dataNorm_Coding <- TCGAanalyze_Normalization(tabDF = dataPrep_Coding, geneInfo = geneInfoHT, method = "geneLength")
+dataFilt_Coding <- TCGAanalyze_Filtering(tabDF = dataPrep_Coding, method = "quantile", qnt.cut =  0.25)   
+```
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=6, fig.width=10, results='show', cache=FALSE, dev='png'}
+# explore data using box plot
+# look at the numeric values that are represented for each of the data sets 
+# downloaded, in order to assess for batch effects in the data.
+boxplot(dataPrep_Coding, outline = FALSE, xaxt = "n", main = "pre-Normalized Data")
+
+# visualize the normalized and filtered data with box plot
+boxplot(dataNorm_Coding, outline = FALSE, xaxt = "n", main = "Normalized Data")
+
+```
+  
+The box plot above show the quantiles are not similar among the pre-normalized samples indicating batch effects in the data. So, quantile normalization is performed on the samples to eliminate batch effects. The normalized samples are more comparable between quantiles compared to the pre-normalized data.  
+<br>
+<br>
+  
+
+## Principal Components Analysis  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+## Use all expression data for PCA
+library(preprocessCore)
+library(ggplot2)
+
+# get the expression matrix 
+expr_all <- assay(SEcoding)
+# perform quantile normalization
+expr_norm <- normalize.quantiles(as.matrix(expr_all))
+# assign row names as expression matrix
+rownames(expr_norm) <- rownames(expr_all)
+# assign column names as expression matrix
+colnames(expr_norm) <- colnames(expr_all)
+
+# scale the data
+expr_scaled <- t(scale(t(expr_norm)))
+# transpose the expression matrix
+expr_transpose <- t(expr_scaled)
+
+# perform PCA
+pca_result <- prcomp(expr_transpose, scale. = FALSE)
+
+# prepare data for plotting
+# create a data frame from the PCA results and the sample attributes
+pca_df <- data.frame(pca_result$x,
+                     colData(SEcoding))
+
+
+## find the most significant genes in PC1 and PC2 (to be used later)
+# get the loadings and make a data frame
+pca_loads <- as.data.frame(pca_result$rotation)
+# attach gene information to loadings
+pca_loads$gene_id <- rowData(SEcoding)$gene_id
+pca_loads$gene_name <- rowData(SEcoding)$gene_name
+
+
+# plot PCA colored by a sample attribute (e.g. shortLetterCode)
+# aes() function is used to map the variables to the x and y axes
+# geom_point() function is used to create a scatter plot
+# theme_minimal() function is used to create a minimal theme
+# labs() function is used to add labels to the plot
+ggplot(pca_df, aes(x = PC1, y = PC2, color = shortLetterCode)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_minimal() +
+  labs(title = paste("PCA of All Gene Expression"),
+       x = paste0("PC1 (", round(100*summary(pca_result)$importance[2,1], 1), "% var)"),
+       y = paste0("PC2 (", round(100*summary(pca_result)$importance[2,2], 1), "% var)"))
+
+```
+<br>  
+**Discussion:**  
+The results of PCA analysis shows that PC1 explains 12.8% of the variance, while PC2 explains 8.5% of the variance. Together, PC1 and PC2 explain 21.3% of total variance, concentrating the most discriminating information into just two principal components. The distinct clustering indicates that NT and TP samples have fundamentally different gene expression profiles and showing genuine molecular differences between these conditions, making it likely that the logistic regression model will be successful. There is some overlap between groups in the central region, which will likely corresponds to misclassifications in the logistic regression model. 
+<br>
+<br>  
+  
+## Data Exploration -- Gene Correlation Analysis  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+### Gene Correlation Analysis ###
+library(SummarizedExperiment)
+library(dplyr)
+library(tibble)
+library(purrr)
+
+
+# 1. Get normalized expression matrix
+expr_mat <- expr_norm
+
+# 2. Get metadata 
+meta <- as.data.frame(colData(SEcoding))
+
+# example continuous variables of interest
+vars <- c("days_to_last_follow_up")
+
+# ensure they exist
+vars <- vars[vars %in% colnames(meta)]
+
+# 3. Prepare output as list
+results <- list()
+
+# 4. Loop through continuous variables
+for (i in vars) {
+  # get the variables of interest
+  y <- meta[[i]]
+  
+  # Keep only non-missing samples
+  valid_samples <- which(!is.na(y))
+  # subset the expression matrix for the valid samples
+  expr_sub <- expr_mat[, valid_samples, drop = FALSE]
+  # subset the variables of interest for the valid samples
+  y_sub <- y[valid_samples]
+  
+  # Correlation per gene
+  # will apply a function to each row of the expression matrix
+  res <- apply(expr_sub, 1, function(x) {
+    # calculate the spearman correlation between the expression and the variables
+    ct <- suppressWarnings(cor.test(x, y_sub, method = "spearman"))
+    # return the correlation and p-value
+    c(cor = unname(ct$estimate),
+      pval = ct$p.value)
+  })
+  # convert the results to a data frame
+  res <- as.data.frame(t(res))
+  # add the gene id and gene name
+  res$gene_id <- rowData(SEcoding)$gene_id
+  # add the gene name
+  res$gene_name <- rowData(SEcoding)$gene_name
+  # add the variable
+  res$variable <- i
+  # add the adjusted p-value
+  res$padj <- p.adjust(res$pval, method = "fdr")
+  # add the results to the list
+  results[[i]] <- res
+}
+
+# 5. Combine into one dataframe
+cor_results <- bind_rows(results)
+
+# 6. Show top hits
+top_hits <- cor_results %>%
+  # take correlation results and arrange by adj pval & correlation value
+  arrange(padj, desc(abs(cor))) %>%
+  # select gene id, name, variable, correlation, pval & adj pvalues
+  select(gene_id, gene_name, variable, cor, pval, padj)
+
+# show the top 20 results
+print(head(top_hits, 20))
+
+paste("After correlation analysis, the most significant gene is:", top_hits$gene_name[1])
+
+# assign top gene to a variable
+top_geneid <- top_hits$gene_id[1]
+top20 <- top_hits$gene_id[1:20]
+
+```
+<br>  
+**Discussion:**  
+The gene correlation analysis identifies genes whose expression levels correlate most strongly with survival, recurrence, or treatment response (days to last follow up). The results are sorted by adjusted p-value significance and correlation strength. There are mixed correlations (positive and negative directions) suggesting a more complex biological relationships with survival or follow up time. All correlations are highly statistically significant, with adjusted p-values ranging from 10E-5 to 10E-3, indicating that the results are robust and reproducible associations unlikely to occur by chance. This result reveals prognostic gene signatures associated with follow-up time, and reflects fundamental differences in the molecular state of the disease.
+<br>
+<br>  
+
+  
+## Logistic Regression  
+  
+The logistic regression below will take in the most significant genes from the **PCA analysis**, based on the loadings.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+library(caret)
+library(glmnet)
+library(pROC)
+library(dplyr)
+
+# 1. Define outcome: normal (0) vs breast cancer (1)
+# grab column data from SEcoding as previous
+#meta <- as.data.frame(colData(SEcoding))
+# create a new column in the meta data frame with the outcome
+# if the sample type is tumor the outcome is 1, otherwise it's 0
+meta$breast_cancer <- ifelse(grepl("tumor", meta$sample_type, ignore.case = TRUE), 1, 0)
+
+# count the number of 1s and 0s in the outcome to check balance
+table(meta$breast_cancer)
+
+# 2. Get normalized expression matrix from previous
+#expr_norm <- normalize.quantiles(as.matrix(expr_all))
+
+# 3. Get the most significant gene in PC1
+pca1_gene <- pca_loads %>%
+  # arrange by absolute value of PC1
+  arrange(desc(PC1)) %>%
+  # select the top 20 genes
+  head(20) %>%
+  # select the gene id, gene name, and PC1
+  select(gene_id, gene_name, PC1)
+# print the most significant gene in PC1
+paste("The most significant gene in PC1 is, gene ID:", pca1_gene[1,1], ", gene name:", pca1_gene[1,2])
+
+# 4. Get the most significant gene in PC2
+pca2_gene <- pca_loads %>%
+  arrange(desc(PC2)) %>%
+  head(20) %>%
+  select(gene_id, gene_name, PC2)
+# print the most significant gene in PC2
+paste("The most significant gene in PC2 is:", pca2_gene[1,2])
+
+# 5. Build data frame to put all together
+# need variable for outcome as a factor, level is 0 or 1
+outcome <- meta$breast_cancer
+# convert to a factor
+outcome <- factor(outcome, levels = c(0,1))
+
+# assign new variable for the normalized expression matrix
+expr_norm2 <- expr_norm
+
+# assign new variables for the most significant genes in PC1 & PC2
+# this will be used to subset the data for the model
+pc1_top <- pca1_gene[1,1]
+pc2_top <- pca2_gene[1,1]
+
+# 6. Logistic regression with one gene
+# formula: outcome ~ expression matrix of most significant gene in PC1
+model1 <- glm(outcome ~ expr_norm2[pc1_top, ], family = "binomial")
+# print to show some details about the model fit
+model1
+# print to show more details about the model fit
+summary(model1)
+
+# print the predicted values for the first 5 samples
+# "type=response" will return the predicted probabilities
+predict(model1, type = "response")[1:5]
+
+# 7. Logistic regression with two genes
+model2 <- glm(outcome ~ expr_norm2[pc1_top, ] + expr_norm2[pc2_top, ], family = "binomial")
+model2
+summary(model2)
+
+predict(model2, type = "response")[1:5]
+
+
+## checking the feature with the most predictive outcome with anova test
+anova1 <- anova(model1, test = "Chisq")
+print(anova1)
+
+anova2 <- anova(model2, test = "Chisq")
+print(anova2)
+
+```
+<br>  
+**Discussion:**  
+The information obtained from model 1 summary using the top gene from PC1 showed a highly significant coefficient -9.4E-4, indicating that higher expression of this gene is associated with a lower probability of the outcome. With the addition of the top gene from PC2, the PC1 gene coefficient is still highly significant and negative, and PC2 gene coefficient is also highly significant (-2.8E-3) with a stronger effect than the PC1 gene (~2x larger coefficient). Both genes independently contribute to predicting the outcome, and both have negative coefficients, suggesting higher expression of either gene is associated with reduced odds of the outcome. Model 2 is better as the large decrease in both deviance and AIC indicates that the PC2 gene adds meaningful predictive information beyond the PC1 gene.  
+  
+The ANOVA results shows how much each predictor contributes to improving the model when added in order. When the top gene from PC1 is added first, it captures >67% of the total explainable deviance and the p-value is extremely significant at 2.26E-16. This shows that this gene alone explains a significant amount of variation in the outcome and it is highly predictive. When the top gene from PC2 is added second, the deviance reduction is moderate but the p-value is still highly significant at 3.3E-16. Even after the PC1 gene, the PC2 gene provides a substantial addition of predictive power and explains complementary information not captured by PC1 gene. In this case, the order matters as PC1 gets the credit for all shared predictive power; However, both genes remain highly significant regardless of order and they both contribute uniquely. The top gene from PC1 is the strongest single predictor of the outcome, but combining it with PC2 gene created a significantly better model.
+<br>
+<br> 
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Assess Prediction ##
+
+assess.prediction <- function(truth,predicted) {
+  # exclude NA values from predicted and truth variables
+  predicted = predicted[! is.na(truth)]
+  truth = truth[! is.na(truth)]
+  truth = truth[! is.na(predicted)]
+  predicted = predicted[! is.na(predicted)]
+  # print the total number of cases that are not NA
+  cat("Total cases that are not NA: ",length(truth),"\n",sep="")
+  # print the correct predictions or accuracy
+  cat("Correct predictions (accuracy): ",sum(truth==predicted), "(",signif(sum(truth==predicted)*100/length(truth),3),"%)\n",sep="")
+  # calculate the true positive rate, true negative rate, positive predictive value,
+  # false discovery rate, and false positive rate
+  TP = sum(truth==1 & predicted==1)
+  TN = sum(truth==0 & predicted==0)
+  FP = sum(truth==0 & predicted==1)
+  FN = sum(truth==1 & predicted==0)
+  # calculate the total number of positive and negative cases
+  P = TP+FN
+  N = FP+TN
+  # print the true positive rate, true negative rate, positive predictive value,
+  # false discovery rate, and false positive rate.
+  # report results in percentage (hence 100*) and 3 decimal places
+  cat("TPR (sensitivity)=TP/P: ", signif(100*TP/P,3),"%\n",sep="")
+  cat("TNR (specificity)=TN/N: ", signif(100*TN/N,3),"%\n",sep="")
+  cat("PPV (precision)=TP/(TP+FP): ", signif(100*TP/(TP+FP),3),"%\n",sep="")
+  cat("FDR (false discovery)=1-PPV: ", signif(100*FP/(TP+FP),3),"%\n",sep="")
+  cat("FPR =FP/N=1-TNR: ", signif(100*FP/N,3),"%\n",sep="")
+}
+
+## Assess predictions for model1 (one gene)
+# make predictions with threshold larger than 0.5
+assess.prediction(outcome, as.numeric(predict(model1, type="response") > 0.5))
+
+## Assess predictions for model2 (two genes)
+# make predictions with threshold larger than 0.5
+assess.prediction(outcome, as.numeric(predict(model2, type="response") > 0.5))
+
+```
+<br>  
+**Discussion:**  
+The prediction assessment for model 1 show all metrics are identical at 85.8%, indicating balanced performance across positive and negative classes. With 85.8% accuracy the model correctly classifies 194/226 cases and the positive prediction is correct 85.8% of the time (PPV). The model shows that it detected 85.8% of true positive and true negative cases, but it has a false positive and false negative rates of 14.2% each.  
+On the other hand, by adding a second gene model 2 improved accuracy by correctly classifying 204/226 cases or 90.3% (a 4.5% increase from model 1). When predicting positives (PPV) it is correct 91% of the time, a 5.2% increase. This model was slightly better at identifying true negative cases at 91.2% (5.4% increase), while sensitivity for true positive cases is 89.4% (3.6% increase). Additionally, the false discovery and false positive rates are reduced to 9.0% and 8.8%, respectively, showing a 5% reduction.  
+The top gene from PC1 was quite informative achieving >85% across all metrics in model 1. However, model 2 is clearly superior as it correctly classified 10 additional cases and achieving over 90% accuracy with balanced sensitivity and specificity. The addition of the PC2 gene translates the improved statistical fit, making it the preferred model for making predictions. 
+<br>
+<br>
+  
+
+# Cross Validation  
+  
+## a. Logistic regression with one top gene  
+  
+In this case, the top gene used in the model below is obtained from the **gene correlation analysis**. 
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# the most significant gene from correlation analysis
+paste("After correlation analysis, the most significant gene is:", top_hits$gene_name[1])
+
+# first, transpose the expression matrix
+expr_norm3 <- t(expr_norm)
+
+# perform Logistic regression with the most significant gene
+# formula: outcome ~ expression matrix for the most significant gene
+# family = "binomial" will make glm use logit link
+# na.action = na.exclude will exclude NA values
+lr_1 <- glm(outcome ~ expr_norm3[, top_geneid], family = "binomial", na.action = na.exclude)
+
+# assess prediction
+# predict() function will make predictions from the model using outcome (factor of 0 or 1)
+# type = "response" will return the predicted probabilities
+assess.prediction(outcome, as.numeric(predict(lr_1, type = "response")>0.5))
+
+```  
+<br>  
+
+## b. Logistic regression with highly correlated genes  
+  
+The top genes used in the model are obtained from the **gene correlation analysis**.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# Logistic regression with the top 20 correlated genes
+lr_2 <- glm(outcome ~ expr_norm3[, top20], family = "binomial", na.action = na.exclude)
+
+# assess prediction
+assess.prediction(outcome, as.numeric(predict(lr_2, type = "response")> 0.5))
+
+```  
+<br>  
+
+## c. Naive Bayes with one top gene  
+  
+In this case, the top gene used in the model below is obtained from the **gene correlation analysis**.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+library(e1071)
+
+# Naive Bayes classification with most significant gene
+# formula: outcome ~ expression matrix for the most significant gene
+# output is a naiveBayes object
+nb_1 <- naiveBayes(outcome ~ expr_norm3[, top_geneid], data = data.frame(expr_norm3[, top_geneid]))
+
+# assess prediction
+assess.prediction(outcome, as.numeric(predict(nb_1, data.frame(expr_norm3[, top_geneid]))))
+
+```  
+<br>  
+
+## d. Naive Bayes with highly correlated genes  
+  
+The top genes used in the model are obtained from the **gene correlation analysis**.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# Naive Bayes classification with top 20 correlated genes
+# formula uses a '.' to represent all the variables in the expression matrix
+nb_2 <- naiveBayes(outcome ~ ., data = data.frame(expr_norm3[, top20]))
+
+# assess prediction
+assess.prediction(outcome, as.numeric(predict(nb_2, data.frame(expr_norm3[, top20]))))
+
+```  
+<br>  
+**Discussion:**  
+Cross validation using the top gene from the gene correlation analysis, show that the logistic regression (LR) model is better at handling single continuous features and more robust compared to naive bayes (NB). The result for LR model show 72.6% accuracy compared to 50% of NB model, which is basically random chance! The LR model also shows high specificity and good precision, but has moderate sensitivity missing one-third of positive cases -- which can be problematic. The NB model shows that it struggled with single-features, especially continuous variables.  
+  
+On the other hand, the top 20 genes from the gene correlation analysis show a major contrast between NB and LR models using a continuous variable. NB model shows a <10% accuracy, worse than random chance! Adding 20 correlated features to the NB model violates the naive independence assumption, and the correlated features compounded the probability estimation errors making it more confident in wrong predictions. Whereas the LR showed excellent success with ~93% accuracy from adding the top 20 correlated genes, a 20% improvement from the single-gene feature. The LR model shows excellent positive and negative detections, high confidence in positive predictions, and very low misclassifications.  
+  
+The multi-gene approach achieved the best performance. The top 20 follow-up-correlated genes capture diverse prognostic biology that collectively predicts outcome better than any previous approach. The model correctly classifies 210 out of 226 cases with minimal bias. The failure of NB model is a warning to select the correct algorithm for the desired analysis.
