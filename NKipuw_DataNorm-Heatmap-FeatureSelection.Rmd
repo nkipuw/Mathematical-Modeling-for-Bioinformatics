@@ -1,0 +1,654 @@
+---
+title: RBIF112 - Assignment 2
+author: "Author: Neshita Kipuw"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+---  
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+homedir <- "H:/My Drive/RBIF112/wk2/HW-files" # object containing a home directory path in R ( in this code chunk), and in python (The next code chunk).
+setwd(homedir)
+#library(reticulate) # required package for the execution of python code from R.
+## check the path of python
+## here for example: if you have a conda env where python is installed, you can activate the conda env and find the path to the python: `which python`
+#use_python("C:/Users/nessi/miniconda3/envs/hw1/python.exe") # Path to the directory where python is stored on your computer.  
+```
+
+
+```{python, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+#import os 
+#homedir = "H:/My Drive/RBIF112/wk2/HW-files"
+#os.chdir(homedir)
+```
+<br>
+<br>
+  
+
+# DEseq Analysis of Data set Classes  
+  
+## Download dataset from GEO  
+The data set is a study to evaluate the changes in molecular expression of circulating tumor cells (CTC) in patients with hepatocellular carcinoma (HCC) treated with Atezolizumab & Bevacizumab. Any changes in molecular expression and CTC numbers were analyzed to identify effective biomarkers. The RNAseq data set contain 234 genes, 10 samples for control, and 10 samples for treatment.
+  
+The code below will download the data set from GEO.  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=8, results='show', cache=FALSE}
+#library(GEOquery)
+#library(org.Hs.eg.db)   # Human-specific annotation
+#library(AnnotationDbi)
+
+
+GEODataDownload <- function(DS, gpl, gsm, PlateAnnotInfo, GenerateMetaData, Technology){
+  library(DESeq2); library(limma); library(data.table)
+  if(Technology == "Array"){
+    gset <- getGEO(DS)
+    if(length(gset) > 1) idx <- grep(gpl, attr(gset, "names")) else idx <- 1
+    gset <- gset[[idx]]
+    fvarLabels(gset) <- make.names(fvarLabels(gset))
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up raw names ####
+    sml <- c()
+    for(i in 1:nchar(gsms)){ sml[i] <- substr(gsms,i,i)}
+    ex <- exprs(gset)
+    qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+    LogC <- (qx[5] > 100) ||
+      (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+      (qx[2] > 0 && qx[2] < 1 && qx[4] < 2)
+    if(LogC){ ex[which(ex <= 0)] <- NaN
+    exprs(gset) <- log2(ex) }
+    sml <- paste("G", sml, sep="")
+    f1 <- as.factor(sml)
+    gset$description2 <- f1
+    design <- model.matrix(~description2 + 0, gset)
+    colnames(design) <- levels(f1)
+    fit <- lmFit(gset, design)
+    cont.matrix <- makeContrasts(G1-G0, levels = design)
+    fit2 <- contrasts.fit(fit, cont.matrix)
+    fit2 <- eBayes(fit2, 0.01)
+    tT <- topTable(fit2, adjust="fdr", sort.by = "B", number = 25000000000)
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("ID", "logFC", "P.Value", "adj.P.Val")))
+    ex2$ID <- as.character(ex2$ID)
+    #### annotate with gene names ####
+    plat <- PlateAnnotInfo[GPLID == gpl,][,!"GPLID", with = FALSE]
+    if(nrow(plat) == 0){ print(paste("There is no annotation information available for", gpl)) }
+    plat$ID <- as.character(plat$ID)
+    plat <- plat[!duplicated(plat$ID),]
+    ex2 <- merge(plat, ex2, by = "ID")
+    ex2$ID <- as.character(ex2$ID)
+    exraw <- data.table(ex)
+    exraw$ID <- as.character(rownames(ex))
+    #### annotate raw data with gene names ####
+    ex2 <- merge(ex2, exraw, by = "ID")
+    #### Generate Meta Data ####
+    Pdat <- pData(gset)
+    #### Add Meta data ####
+    Pdat <- as.data.table(Pdat)
+    return(list(Data = ex2, MetaData = Pdat))
+  }
+  
+  if(Technology == "RNAseq"){
+    ACC <- paste("acc=", DS, sep = "")
+    file <- paste("file=", DS, "_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep = "")
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up DEG names ####
+    urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+    path <- paste(urld, ACC, file, sep="&");
+    tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+    exraw <- tbl 
+    apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+    annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+    rownames(annot) <- annot$GeneID
+    sml <- strsplit(gsms, split="")[[1]]
+    sel <- which(sml != "X")
+    sml <- sml[sel]
+    tbl <- tbl[ ,sel]
+    gs <- factor(sml)
+    groups <- make.names(c("Ctrl", "Tx"))
+    levels(gs) <- groups
+    sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+    keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+    tbl <- tbl[keep, ]
+    ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+    ds <- DESeq(ds, test="Wald", sfType="poscount")
+    r <- results(ds, contrast=c("Group", groups[2], groups[1]), alpha=0.05, pAdjustMethod ="fdr")
+    tT <- r[order(r$padj)[1:length(r$padj)],]
+    tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+    tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("GeneID", "Symbol", "Description", "log2FoldChange", "pvalue", "padj")))
+    #### Adjust column names ####
+    setnames(ex2, c("GeneID", "Symbol", "Description"), c("ENTREZID", "SYMBOL", "GENENAME"))
+    #### Get Raw data ####
+    GeneID <- as.integer(rownames(exraw))
+    exraw <- as.data.table(exraw)
+    #### Update column names ####
+    exraw$ENTREZID <- GeneID
+    #### merge FC and raw data together ####
+    mer <- merge(ex2, exraw, by = "ENTREZID")
+    return(mer)
+  }
+}
+
+
+# Execute the GEODataDownload function and obtain the RNAseq data set
+RNAseqData <- GEODataDownload(DS = "GSE247146",
+                              gpl = "GPL30173",
+                              gsm = "11010101001111111000000",
+                              PlateAnnotInfo = "Only needed if the data was generated using MicroArrays",
+                              GenerateMetaData = "Only needed if the data was generated using MicroArrays",
+                              Technology = "RNAseq")
+data.table(head(as.data.frame(RNAseqData),10), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+# Save the RNAseq data set to the working directory
+saveRDS(RNAseqData, file = "~/RNAseq_GSE247146.rds")
+
+# Reload the file into R environment
+GSE247146 <- readRDS("~/RNAseq_GSE247146.rds")
+dim(GSE247146)
+```
+<br>  
+  
+  
+## Summarized Experiment object  
+  
+The code below will create a summarized experiment object using ENSEMBL ID, that was annotated in Question 2, as the row data and the RNAseq data.  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+library(SummarizedExperiment)
+
+# get column names of GSE261186 data set
+print(colnames(GSE247146))
+# specify which columns are count data (numeric columns that are not annotation)
+numeric_cols <- sapply(GSE247146, is.numeric)
+annotation_cols <- c("ENTREZID", "SYMBOL", "GENENAME", "log2FoldChange", "pvalue", "padj")
+count_cols <- names(GSE247146)[numeric_cols & !(names(GSE247146) %in% annotation_cols)]
+print(count_cols)
+
+# convert the data set as a data frame first
+GSE247146_2 <- as.data.frame(GSE247146)
+
+
+## create the components for Summarized Experiment object ##
+# 1. create row data (gene annotations)
+# the SYMBOL column is used to identify the unique rows
+row_data <- GSE247146_2[, c("SYMBOL", "GENENAME", "ENTREZID")]
+rownames(row_data) <- GSE247146_2$SYMBOL
+
+# 2. create count matrix (matrix of expression)
+count_matrix <- as.matrix(GSE247146_2[, count_cols])
+rownames(count_matrix) <- GSE247146_2$SYMBOL
+
+
+# 3. create column data or the sample metadata
+# there are 2 types of samples: control (0) and treatment (1)
+# map each sample based on the GSM pattern
+gsm_pattern <- "11010101001111111000000"
+sample_grp <- ifelse(strsplit(gsm_pattern, "")[[1]] == "1", "Treatment", "Control")
+sample_cond <- ifelse(strsplit(gsm_pattern, "")[[1]] == "1", "Tx", "Ctrl")
+
+col_data <- data.frame(
+  Sample = as.factor(count_cols),
+  Group = as.factor(sample_grp),
+  Condition = as.factor(sample_cond),
+  row.names = count_cols
+)
+
+# combine components 1-3 above to create Summarized Experiment object
+my_SE <- SummarizedExperiment(
+  assays = list(counts = count_matrix),
+  rowData = row_data,
+  colData = col_data
+)
+
+# show the Summarized Experiment object
+print(my_SE)
+
+# access different components
+print("Column data:")
+colData(my_SE)
+
+print("Row data:")
+head(rowData(my_SE))
+
+print("Assay:")
+head(assay(my_SE))
+
+
+# Save the SummarizedExperiment object (optional)
+#saveRDS(my_SE, file = "~/GSE261186_SummExpt.rds")
+
+```
+<br>  
+  
+## DESeq Analysis
+  
+The code below will perform DESeq analysis on non-normalized, raw count values of the data set.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+
+# DESeq Analysis
+library(DESeq2)
+
+## create DESeqDataSet
+# data is packaged into DESeqDataSet class, similar to SummarizedExperiment object 
+# Then used single factor design (i.e., treatment condition) to construct the data set object.
+my_dds = DESeqDataSet(my_SE,design = ~Condition) 
+nrow(my_dds) # can be applied directly to the DESeqDataSet object and returns the number of genes in the data set.
+
+## filter out genes with low counts
+my_dds = my_dds[ rowSums(counts(my_dds)) > 10, ] 
+# filter cutoff 10 is arbitrary, and testing up to cutoff 50 (not shown) still didn't filter out any of the genes.
+nrow(my_dds)
+
+## estimate size factors
+# the function estimates normalization factors and returns a modified object with the normalization factors in it, which then gets assigned back to the 'my_dds' variable. 
+# the function also discards any 'zero' rows, so filtering for low counts like the codes above actually isn't necessary.
+my_dds = estimateSizeFactors(my_dds) 
+sizeFactors(my_dds)[1:23] # an accessor that retrieves and prints the factors after they were calculated and stored in the object. 
+
+## perform DESeq analysis
+my_deseq = DESeq(my_dds)  # differential expression analysis.
+# get the results
+mydeseq_res = results(my_deseq) # generates table with extracted results of log2 fold change, p values and adjusted p values.
+head(mydeseq_res)
+
+# order the results by padj
+deseqres_ordered <- mydeseq_res[order(mydeseq_res$padj),]
+head(deseqres_ordered)
+
+# the number of adjusted p-values less than 0.05
+sum(deseqres_ordered$padj < 0.05, na.rm = TRUE)
+
+# summary of the results
+summary(mydeseq_res)
+
+```
+<br>  
+  
+## Visualization of DESeq Analysis  
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+library(ggplot2)
+
+# log fold change (LFC) shrinkage for visualization and ranking
+resultsNames(my_deseq)
+
+# get the results for the contrast of interest
+resLFC = lfcShrink(my_deseq, coef="Condition_Tx_vs_Ctrl", type="apeglm")
+head(resLFC)
+
+```
+<br>  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=10, fig.width=12, results='show', cache=FALSE}
+
+# volcano plot of DESeq results with colors
+# create color vector based on significance and direction
+colors <- ifelse(resLFC$padj < 0.05 & resLFC$log2FoldChange > 0, "red",  # Upregulated (red)
+                 ifelse(resLFC$padj < 0.05 & resLFC$log2FoldChange < 0, "blue",  # Downregulated (blue)
+                        "black"))  # Not significant (black)
+
+plot(resLFC$log2FoldChange, -log10(resLFC$padj), 
+     pch=20, 
+     col=colors,
+     main="Volcano Plot", 
+     xlab="log2FoldChange", 
+     ylab="-log10(padj)")
+# add legend
+legend("topleft", legend = c("Upregulated", "Downregulated", "Not significant"), col = c("red", "blue", "black"), pch = 20)
+
+# clear the graph format
+dev.off()
+
+```
+<br>  
+
+**VOLCANO PLOT OBTAINED FROM GEO2R ANALYSIS (DEFAULT SETTINGS)**
+<img src= "H:\My Drive\RBIF112\wk2\HW-files\volcano1.png">  
+<br> 
+  
+**Discussion:**  
+There are significant differences observed from these two plots that have been obtained from two different approaches. The volcano plot obtained from GEO2R (bottom plot) with default analysis settings, shows a narrow range of log2FC values, approximately from -5 to +2, with most of the significant genes clustered in the negative range. In this case, GEO2R predominantly identified downregulated genes as significant (blue dots) and very few upregulated genes (red dots) were identified. The volcano plot obtained from DESeq2 analysis (top plot), shows more positive data points, from -1 to +4, indicating most of the upregulated genes (red dots) as significant. This analysis showed the exact opposite plot to GEO2R, which can be confusing.  
+GEO2R analysis utilizes limma, that is generally used for microarray data sets, and the p-value adjustment and fold change thresholds may be more conservative. This could be the reason why it may not be the best method for RNA-seq analysis, which is this data set. DESeq2 analysis is designed for count-based RNA-seq data sets. The log2 fold change shrinkage process analys reduces any inflated fold change estimates, especially for genes with low counts or high variability, and helps make it more reliable and reproducible. The effect size estimates from DESeq2 analysis also provides more realistic estimates for biological interpretation.  
+Based on GEO2R analysis, the treatment in this dataset primarily caused down-regulation of gene expression. However, DESeq2 analysis identified more upregulation of genes instead. In this case, I would agree with DESeq2 analysis findings because this package is specifically designed for this data set.  
+<br>  
+<br>  
+  
+  
+  
+# Normalization Techniques  
+  
+## Importance of Normalization and the Methods  
+  
+Data normalization is a necessary step to enhance reliability and interpretability when processing gene expression data. There is inherent biological and technical variability in the data which can arise from, for example, experimental conditions, sample handling, or processing times.[1] The main goal is to make gene counts comparable within and between samples.  
+
+Limma differential expression analysis operates by getting individual variance estimates from each gene based on its mean expression level, and explicitly models the mean-variance relationship found in count data. It can handle genes with sparse expression better than simple count-based methods. Limma can be used for multiple platforms, like microarray and RNA-seq, and it has the ability to analyze gene expression profiles in terms of co-regulated gene sets and higher-order expression signatures, providing better biological interpretations of gene expression differences.[3] It operates on a matrix of expression values and integrates statistical principles effectively for large-scale expression studies, enabling data import, pre-processing, quality assessment, normalization, and linear modeling.[3] Overall, it has a robust variance modeling, great computational efficiency, and flexible experimental design handling that makes it particularly valuable for complex studies and large-scale analyses.
+
+Variance stabilization normalization (VSN) performs a model fit to the data (usually a linear model) that enables sample normalization.[2] Then it proceeds to perform log transformation to stabilize the asymptotic variance of microarray data across the full range of the data, as well as making it more symmetric.[4] The result is a robust estimate of the replicate mean and standard deviation of the data transformed, where the standard deviation remain constant across the full range of the data.[4] Having stabilized the data variance, it is much easier to further analyze the data as desired.  
+ 
+  
+References:  
+[1] Duran R.C., Wei, H. and Wu, J. (2024). Data normalization for addressing the challenges in the analysis of single-cell transcriptomic datasets. BMC genomics, 25(1). doi:https://doi.org/10.1186/s12864-024-10364-5.  
+[2] Poudel, R. (2025). RNA-Seq data, normalization, feature selection, and the DESeq package. RBIF112 Week 2 Notes, Brandeis University GPS.  
+[3] Ritchie, M. E., Phipson, B., Wu, D., Hu, Y., Law, C. W., Shi, W., & Smyth, G. K. (2015). limma powers differential expression analyses for RNA-sequencing and microarray studies. Nucleic acids research, 43(7), e47. https://doi.org/10.1093/nar/gkv007.  
+[4] Durbin, B., Hardin, J., Hawkins, D., & Rocke, D. (2002). A Variance-Stabilizing Transformation for Gene-Expression Microarray Data. Bioinformatics, 18. Retrieved from https://escholarship.org/uc/item/37j5b4z7  
+<br>  
+  
+## Microarray data set  
+  
+**NOTE:** Due to the great difficulty in finding microarray raw data from GEO, the *airway* data set (from the notes) will be used since this data set provides raw expression values (not normalized values) of microarray data along with clear annotations.  
+The codes below will download the airway data set, then create a SummarizedExperiment object in order to perform normalization and differential expression analyses.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# load data set package
+library(airway)
+# load the data
+data(airway)
+# view a summary of the data
+airway
+
+
+## Create SummarizedExperiment object of array data ##
+
+# create the components for Summarized Experiment object
+# 1. create row data (gene annotations)
+airway_row_data <- rowData(airway)
+# specify which columns are annotations
+airway_row_data <- airway_row_data[, c("symbol", "gene_id", "gene_name")]
+# the SYMBOL column is used to identify the unique rows
+# change row names to SYMBOL
+rownames(airway_row_data) <- airway_row_data$symbol
+
+
+# 2. create count matrix (matrix of expression)
+airway_count <- assays(airway)[["counts"]]
+# view the matrix by grabbing the first 3 rows and 4 columns
+airway_count[1:3, 1:4]
+# change the column names to SampleName
+colnames(airway_count) <- colData(airway)$SampleName
+# change the row names to SYMBOL, the same as the row data
+rownames(airway_count) <- rownames(airway_row_data)
+
+
+# 3. create column data or the sample metadata
+airway_col_data <- colData(airway)
+# specify which columns are needed
+airway_col_data <- airway_col_data[, c("SampleName", "dex", "cell", "Run")]
+# view the first 6 rows and 5 columns of the column data
+head(airway_col_data)
+# change the row names to the SampleName
+rownames(airway_col_data) <- airway_col_data$SampleName
+# add a column called Condition to the data to specify Control and Treatment samples
+airway_col_data$Condition <- airway_col_data$dex
+
+
+# combine components 1-3 above to create the SummarizedExperiment object
+airway_SE <- SummarizedExperiment(
+  assays = list(counts = airway_count),
+  rowData = airway_row_data,
+  colData = airway_col_data
+)
+
+# show the SummarizedExperiment object
+print(airway_SE)
+
+```
+<br>  
+  
+
+## Technique 1: Differential Expression Analysis with Limma package (mean normalization)
+  
+The advantaged of differential expression with Limma package is that it is widely used and quite robust. It can also easily handle multiple factors, interactions, and co-variates. Compared to DESeq2, the limma package workflow is user-friendly, and faster for large datasets using lower computational power (i.e., memory efficient).
+Dis-advantages with the limma package, is that the Voom method was designed for RNA-seq count data with appropriate variance modeling -- which may not be suitable for a microarray data set with large expression data and moderate to large sample sizes. 
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Limma-Voom DE Analysis ##
+
+# load necessary packages
+library(limma)
+library(edgeR)
+set.seed(123)
+
+# save the counts data to a new variable
+airway_counts <- airway_count  # same data as the count matrix above
+head(airway_counts)
+
+# create a DGEList object
+airway_dge <- DGEList(airway_counts)  #
+head(airway_dge)
+
+# calculate normalization factors
+airway_normfac <- calcNormFactors(airway_dge)  # the function doesn't actually normalize the data, it just calculates factors for use downstream
+airway_normfac                                 # it returns a numeric column storing the calculated normalization factors
+
+
+# filter out any low expressed genes
+# first specify the (arbitrary) numeric cutoff to filter out genes which max expression below 1 CPM
+cutoff <- 1
+# convert raw counts to counts-per-million values, applying it across rows and finding the max CPM across samples, then
+# checks if the max CPM for each gene is less than 1
+drop <- which(apply(cpm(airway_normfac), 1, max) < cutoff)
+# subsets the object by removing rows that didn't pass the CPM cutoff, and
+# returns a new object with filtered gene counts, normalization factors, and the metadata
+airway_dge_filtered <- airway_normfac[-drop,]
+# check number of genes after filtering
+dim(airway_dge_filtered)
+
+
+# specify groups, control and treatment, for the 8 samples in the data set
+condition <- c("Control", "Treatment", "Control", "Treatment", "Control", "Treatment", "Control", "Treatment")
+
+
+# build design matrix used in limma linear modeling, where
+# the condition will create one column per factor level and +0 removes the intercept where there are indicator variables for each group.
+# the design matrix contains each column is a group (factor), each row is a sample, and values of 0/1 for the grouping
+airway_modelmatrix <- model.matrix(~0+condition)
+# returns a numeric matrix with dimensions [n samples x n groups]
+# two columns each for control and treatment groups, and 
+# there are 0/1 values within the columns to indicate the grouping 
+head(airway_modelmatrix)
+
+
+# voom transformation and calculation of variance weights
+# this transforms counts into log2 counts-per-million (logCPM) which estimates the mean variance relationship and 
+# assigns precision weights for each observation.
+airway_voom <- voom(airway_dge_filtered, design = airway_modelmatrix, plot = TRUE)
+# returns an object containing the logCPM expression values (genes x samples), weights, and normalization info
+head(airway_voom)
+
+
+# fit linear model to voom normalized data
+# this fits a linear model for each gene across samples and uses the design matrix to model group differences
+airway_fit <- lmFit(airway_voom, airway_modelmatrix)
+# returns an array object [6 x n conditions] with fitted model parameters, like coefficients, std error, residuals, etc.
+# coef() function extracts the matrix of estimated regression coefficients from the fitted model
+head(coef(airway_fit))
+dim(airway_fit)
+
+
+# test average expression in control minus treatment for each gene
+gene_contrast <- makeContrasts(conditionControl - conditionTreatment, levels = colnames(coef(airway_fit)))
+# returns a contrast matrix (numeric) with coefficients for the linear combination
+# if positive it's higher in control; if negative it's higher in treatment
+gene_contrast
+
+# estimate contrasts for each gene
+# applies the contrast to the fitted model and computes coeff., std error, t-stats
+est_contrast <- contrasts.fit(airway_fit, gene_contrast)
+# returns an array object where the coef now represents the contrast estimates
+
+# empirical Bayes smoothing of standard errors stabilizes variance estimates, and
+# adds a moderated t-stats, p-value, adj p-values to the model fit
+est_contrast <- eBayes(est_contrast)
+# returns an array object with empirical Bayes results
+head(est_contrast)
+
+
+# view genes most differentially expressed
+# extract the final DE results ranked by contrast & Bayes, sorts by ascending p-value, and
+# returns all genes instead of top 10 (default is n=10)
+top_table <- topTable(est_contrast, sort.by = "P", n = Inf)
+# result is data frame of each gene per row containing statistical results
+head(top_table, 20)
+
+# get the number of most significant genes with alpha < 0.05
+length(which(top_table$adj.P.Val < 0.05))
+
+```
+<br>  
+  
+## Technique 2: Limma DE Analysis using (pre-processed) Variance Stabilization normalized data 
+  
+Advantages of the VSN technique include stabilization of the variance where it is approximately constant across the whole dynamic range of expression intensities. This is crucial because in many datasets, variance can change with the mean, leading to difficulties in the analysis, especially for weakly expressed genes. In other words, this takes care of the phenomenon where the variance depends on the intensity, where low mean intensities may have a high variance, whereas the large mean intensities the variance is relatively constant.[5] Therefore, this approach allows for the quantification of differential expression independent from the mean intensities. Additionally, this approach enables multivariate analysis and offers model-based, interpretable solution to normalization issues commonly faced in microarray data sets.[6]
+There are a couple drawbacks. First, the method measures expression differences using a function with two estimated, experiment-specific parameters, which can complicate interpretation.[6] In contrast, the log-ratio can be calculated directly from calibrated data without additional parameters and is easily interpreted as a fold-change. Second, for small intensities near the detection limit, the values derived from the method gets closer to zero, which could affect results and/or biological interpretability.[6]
+
+Reference: 
+[5] Steinhoff, C. (2006). Normalization and quantification of differential expression in gene expression microarrays. Briefings in Bioinformatics, 7(2), pp.166–177. doi:https://doi.org/10.1093/bib/bbl002.
+[6] Huber, W., Von Heydebreck, A., Sültmann, H., Poustka, A. and Vingron, M., 2002. Variance stabilization applied to microarray data calibration and to the quantification of differential expression. Bioinformatics, 18(suppl_1), pp.S96-S104.  
+<br>  
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# load relevant package for normalization technique
+library(NormalyzerDE)
+
+# filter out values with low counts
+CountFilter <- function(airway_count, cutoff = 5){  # function to filter out expression values <5 from the airway_count matrix
+    submat <- as.matrix(airway_count) >= cutoff     # convert the input into a matrix, and create a True/False matrix where True means the count >= cutoff
+    counts <- rowSums(submat)                       # for each row count how many samples have counts >= cutoff, produces a vector
+    counts <- counts[counts >= (ncol(submat)/2)]    # keep only genes expressed in at least half the samples
+    return(airway_count[rownames(airway_count) %in% names(counts),])  # subset the count matrix, keep rows that meet criteria above, return filtered matrix
+}
+
+# save the filtered matrix into a new variable
+airway_count_filtered <- CountFilter(airway_count = airway_count)
+dim(airway_count_filtered)  # check the dimensions of the new matrix
+
+
+## Perform Variance Stabilization Normalization ##  
+# normalize the filtered matrix raw expression data using VSN technique 
+# save into a new variable
+airway_vsn_norm <- performVSNNormalization(airway_count_filtered)
+head(airway_vsn_norm)  # view the normalization data
+
+
+## DE Analysis with Limma package ##
+
+# fit vsn normalized data to linear model
+# this fits a linear model for each gene across samples and uses the design matrix to model group differences
+airway_fit2 <- lmFit(airway_vsn_norm, airway_modelmatrix)
+# returns an array object [6 x n conditions] with fitted model parameters, like coefficients, std error, residuals, etc.
+# coef() function extracts the matrix of estimated regression coefficients from the fitted model
+head(coef(airway_fit2))
+# check the data dimensions (row x columns)
+dim(airway_fit2)
+
+# test average expression in control minus treatment for each gene
+gene_contrast2 <- makeContrasts(conditionControl - conditionTreatment, levels = colnames(coef(airway_fit2)))
+# returns a contrast matrix (numeric) with coefficients for the linear combination
+# if positive it's higher in control; if negative it's higher in treatment
+gene_contrast2
+
+# estimate contrasts for each gene
+# applies the contrast to the fitted model and computes coeff., std error, t-stats
+est_contrast2 <- contrasts.fit(airway_fit2, gene_contrast2)
+# returns an array object where the coef now represents the contrast estimates
+head(est_contrast2)
+
+# empirical Bayes smoothing of standard errors stabilizes variance estimates, and
+# adds a moderated t-stats, p-value, adj p-values to the model fit
+est_contrast2 <- eBayes(est_contrast2)
+# returns an array object with empirical Bayes results
+
+
+# view genes most differentially expressed
+# extract the final DE results ranked by contrast & Bayes, sorts by ascending p-value, and
+# returns all genes instead of top 10 (default is n=10)
+top_table2 <- topTable(est_contrast2, sort.by = "P", n = Inf)
+# result is data frame of each gene per row containing statistical results
+head(top_table2, 20)
+
+# get the number of most significant genes with alpha < 0.05
+length(which(top_table2$adj.P.Val < 0.05))
+
+```
+<br>  
+  
+  
+## Comparison of the Fold Change values between the Limma-Voom and Variance Normalization analyses  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+# create grid view of the plots to be 1 row and 2 columns for side-by-side visualization
+oldpar <- par(mfrow=c(1,2))
+
+## plot log2 fold change from est_contrast results ##
+# create variable to grab the log2 FC values divided into each group, control and treatment
+plot_data <- data.frame(
+    log2_FC = top_table$logFC,
+    Condition = rep(c("Control", "Treatment"), length.out = length(top_table$logFC))
+)
+boxplot(log2_FC ~ Condition, 
+        data = plot_data,
+        las = 1, 
+        col = c("yellow", "purple"),
+        main = "Log2 Fold Change by Limma-Voom",
+        ylab = "Log2 Fold Change")
+
+
+## plot log2 fold change from Variance Stabilization normalization ##
+# create variable to grab the log2 FC values divided into each group, control and treatment
+plot_data2 <- data.frame(
+    log2_FC = top_table2$logFC,
+    Condition = rep(c("Control", "Treatment"), length.out = length(top_table2$logFC))
+)
+
+boxplot(log2_FC ~ Condition, 
+        data = plot_data2,
+        las = 1, 
+        col = c("lightblue", "lightcoral"),
+        main = "Log2 Fold Change by Limma with VSN",
+        ylab = "Log2 Fold Change")
+
+# clear graph formatting
+#dev.off()
+
+```
+<br>  
+  
+**Discussion:**  
+The box plots show a striking and significant difference in log2 fold change distributions between the Limma-Voom analysis and with variance normalization applied to the data. This highlights the major impact of input data normalization processing on DE results.  
+There are scale and range differences, where the standard Limma-Voom plot (left) shows a typical range of log2 fold change from -8 to +4. There are more data points in the negative direction in this plot, indicating down-regulated genes. Whereas the VSN plot (right) shows an extremely wide range of -150 to +150 log fold change, which is problematic.  
+Limma analysis with VSN input underwent twice the transformation, since VSN already log-transforms the data, and then limma applies additional modeling. The result of having pre-normalized data created an exaggerated and probably inaccurate scale. VSN produces variance-stabilized, log2-transformed continuous values, but limma expects either raw counts or properly scaled continuous data; therefore, the VSN output scale does not match with limma's requirements and the variance modeling is not suitable for the VSN normalized data. The key takeaway here is that this was an example of an inappropriate combination of data pre-processing and subsequent analysis method.  
+The limma-voom plot shows both groups have medians clustered around zero, which indicates almost equal numbers of up- and down-regulated genes. However, there are some negative data points indicating some genes are down-regulated (values -6 to -8). Although most data points suggest that the treatment is not causing a major positive or negative changes, there seems to be some genes affected by the treatment as they are now down-regulated.  
+<br>  
