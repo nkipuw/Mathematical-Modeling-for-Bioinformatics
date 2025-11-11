@@ -1,0 +1,544 @@
+---
+title: RBIF112 - Assignment 3
+author: "Author: Neshita Kipuw"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+---  
+  
+Load the necessary packages. 
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+library(ggplot2)
+library(data.table)
+library(cluster)
+library(factoextra)
+library(FactoMineR)
+library(NbClust)
+library(stats)
+library(mdendro)
+library(edgeR)
+library(scatterplot3d)
+```
+<br>  
+  
+The code below will download a data set, GSE153555, from GEO. The data set is a study to characterize the gene expression profiles and identify genes of interest (GOI) in stenotic (AS) and regurgitant (AI) human aortic valves using RNA sequencing technology, to establish a new standard for normal aortic valve transcriptional profiling. The dataset contains over 20,000 genes, 9 normal samples and 18 abnormal samples, with two subtypes of moderate and severe abnormality.  
+Ref: Greene CL, Jaatinen KJ, Wang H, Koyano TK et al. Transcriptional Profiling of Normal, Stenotic, and Regurgitant Human Aortic Valves. Genes (Basel) 2020 Jul 14;11(7). PMID: 32674273
+  
+*Large code function is hidden and may be collapsed.*
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+## Download GEO Dataset ##
+
+GEODataDownload <- function(DS, gpl, gsm, PlateAnnotInfo, GenerateMetaData, Technology){
+  library(DESeq2); library(limma); library(data.table)
+  if(Technology == "Array"){
+    gset <- getGEO(DS)
+    if(length(gset) > 1) idx <- grep(gpl, attr(gset, "names")) else idx <- 1
+    gset <- gset[[idx]]
+    fvarLabels(gset) <- make.names(fvarLabels(gset))
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up raw names ####
+    sml <- c()
+    for(i in 1:nchar(gsms)){ sml[i] <- substr(gsms,i,i)}
+    ex <- exprs(gset)
+    qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+    LogC <- (qx[5] > 100) ||
+      (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+      (qx[2] > 0 && qx[2] < 1 && qx[4] < 2)
+    if(LogC){ ex[which(ex <= 0)] <- NaN
+    exprs(gset) <- log2(ex) }
+    sml <- paste("G", sml, sep="")
+    f1 <- as.factor(sml)
+    gset$description2 <- f1
+    design <- model.matrix(~description2 + 0, gset)
+    colnames(design) <- levels(f1)
+    fit <- lmFit(gset, design)
+    cont.matrix <- makeContrasts(G1-G0, levels = design)
+    fit2 <- contrasts.fit(fit, cont.matrix)
+    fit2 <- eBayes(fit2, 0.01)
+    tT <- topTable(fit2, adjust="fdr", sort.by = "B", number = 25000000000)
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("ID", "logFC", "P.Value", "adj.P.Val")))
+    ex2$ID <- as.character(ex2$ID)
+    #### annotate with gene names ####
+    plat <- PlateAnnotInfo[GPLID == gpl,][,!"GPLID", with = FALSE]
+    if(nrow(plat) == 0){ print(paste("There is no annotation information available for", gpl)) }
+    plat$ID <- as.character(plat$ID)
+    plat <- plat[!duplicated(plat$ID),]
+    ex2 <- merge(plat, ex2, by = "ID")
+    ex2$ID <- as.character(ex2$ID)
+    exraw <- data.table(ex)
+    exraw$ID <- as.character(rownames(ex))
+    #### annotate raw data with gene names ####
+    ex2 <- merge(ex2, exraw, by = "ID")
+    #### Generate Meta Data ####
+    Pdat <- pData(gset)
+    #### Add Meta data ####
+    Pdat <- as.data.table(Pdat)
+    return(list(Data = ex2, MetaData = Pdat))
+  }
+  
+  if(Technology == "RNAseq"){
+    ACC <- paste("acc=", DS, sep = "")
+    file <- paste("file=", DS, "_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep = "")
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up DEG names ####
+    urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+    path <- paste(urld, ACC, file, sep="&");
+    tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+    exraw <- tbl 
+    apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+    annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+    rownames(annot) <- annot$GeneID
+    sml <- strsplit(gsms, split="")[[1]]
+    sel <- which(sml != "X")
+    sml <- sml[sel]
+    tbl <- tbl[ ,sel]
+    gs <- factor(sml)
+    groups <- make.names(c("Ctrl", "Tx"))
+    levels(gs) <- groups
+    sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+    keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+    tbl <- tbl[keep, ]
+    ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+    ds <- DESeq(ds, test="Wald", sfType="poscount")
+    r <- results(ds, contrast=c("Group", groups[2], groups[1]), alpha=0.05, pAdjustMethod ="fdr")
+    tT <- r[order(r$padj)[1:length(r$padj)],]
+    tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+    tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("GeneID", "Symbol", "Description", "log2FoldChange", "pvalue", "padj")))
+    #### Adjust column names ####
+    setnames(ex2, c("GeneID", "Symbol", "Description"), c("ENTREZID", "SYMBOL", "GENENAME"))
+    #### Get Raw data ####
+    GeneID <- as.integer(rownames(exraw))
+    exraw <- as.data.table(exraw)
+    #### Update column names ####
+    exraw$ENTREZID <- GeneID
+    #### merge FC and raw data together ####
+    mer <- merge(ex2, exraw, by = "ENTREZID")
+    return(mer)
+  }
+}
+```
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+# Execute the GEODataDownload function and obtain the RNAseq data set
+RNAseqData <- GEODataDownload(DS = "GSE153555",
+                              gpl = "GPL16791",
+                              gsm = "000000000111111111111111111",
+                              PlateAnnotInfo = "Only needed if the data was generated using MicroArrays",
+                              GenerateMetaData = "Only needed if the data was generated using MicroArrays",
+                              Technology = "RNAseq")
+data.table(head(as.data.frame(RNAseqData),3), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+# Save the RNAseq data set to the working directory
+saveRDS(RNAseqData, file = "~/RNAseq_GSE153555.rds")
+
+# Reload the file into R environment
+GSE153555 <- readRDS("~/RNAseq_GSE153555.rds")
+dim(GSE153555)
+GSE153555[1:3,]
+
+# subset the expression data for all the samples
+GSE153555_2 <- GSE153555[, c(7:33)]
+GSE153555_2[1:3.]
+
+```
+<br>  
+  
+
+# Hierchical Clustering  
+
+The agglomerative coefficient measures the quality of the hierchical clustering structure, indicating how tightly the clusters are formed. The coefficient value is between 0 and 1, and a higher coefficient that is closer to 1 reflects a stronger, more well-defined clustering structure; while lower values suggests loose, less-defined clusters. The code below will calculate the agglomerative coefficient from two linkage methods: complete and Ward, and select the method with the highest value for hierchical clustering.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Agglomerative COefficient ##
+
+# calculate agglomerative coefficient for each linkage method to measure the strength of the clusters
+# the closer is the value to 1, the stronger the clusters
+# define all the linkage methods
+mtds <- c("complete", "ward")
+names(mtds) <- c("complete", "ward")
+
+# calculate distance matrix 
+dist_mat <- dist(GSE153555_2, method = "euclidean")
+
+# function to compute the agglomerative coefficient
+ac <- function(x) {
+    # calculate the linkage based on the distance matrix and the linkage method
+    # the output is a large object
+    lnk_res <- linkage(dist_mat, method = x)
+    # obtain the agglomerative coefficient "ac" from the linkage object output
+    agg.coef <- lnk_res$ac
+    return(agg.coef)
+}
+# execute the function
+ac_values <- sapply(mtds, ac)
+# the output is the agglomerative coefficients for each linkage method
+ac_values
+```
+  
+The agglomeration values show very good results for both linkage methods; However, Ward's method shows the highest value, closest to 1, so Ward's method will be selected for hierchical clustering analysis.  
+<br>  
+
+Hierchical clustering from the top 100 and 1000 genes with the highest variance, as well as all the genes in the data. Visual comparison and discussion of the changes of the top level clusters for the 100, 1000, and all genes analysis.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+## prepare the data for hierarchical clustering
+# subset the expression data only for all the samples
+GSE153555_2 <- (GSE153555[, c(7:33)])
+head(GSE153555_2)
+
+
+## calculate the variance of the data set
+# variance is a measure of how much the data varies from the mean
+# the function apply() applies a function to each row ("1") of the matrix
+# the function var() calculates the variance of each row
+data_var <- apply(GSE153555_2, 1, var)
+# the output is a vector of the variance of each row along with row names
+head(data_var)
+
+
+## create a function to perform hierarchical clustering and plot the dendrogram
+# the plot_hclust function takes in the expression data and the title of the plot
+plot_hclust <- function(expr_subset, title) {
+    # the function dist() calculates the distance between each pair of rows in the matrix
+    # the function scale() scales the expression data
+    dist_matrix <- dist(t(scale(expr_subset)))
+    # the function hclust() performs hierarchical clustering using the Ward method
+    hc <- hclust(dist_matrix, method = "ward.D2")
+    # the function plot() plots the dendrogram
+    plot(hc, main = title, xlab = "", sub = "", cex = 0.6)
+}
+
+## select top 100 genes
+# get the indices of the top 100 genes by variance, by first sorting
+# the variance in decreasing order and then selecting the top 100.
+top100_idx <- order(data_var, decreasing = TRUE)[1:100]
+# subset the expression data for the top 100 genes based on the indices
+top100_genes <- GSE153555_2[top100_idx, ]
+
+
+## select top 1000 genes
+# get the indices of the top 1000 genes by variance, by first sorting
+# the variance in decreasing order and then selecting the top 1000.
+top1k_idx <- order(data_var, decreasing = TRUE)[1:1000]
+# subset the expression data for the top 1000 genes based on the indices
+top1k_genes <- GSE153555_2[top1k_idx, ]
+
+
+## select all genes
+# get the indices of all genes by variance, by first sorting
+# the variance in decreasing order
+all_idx <- order(data_var, decreasing = TRUE)
+# subset the expression data for all genes based on the indices
+all_genes <- GSE153555_2[all_idx, ]
+
+
+# plot the dendrograms and give a title for each plot 
+# using the plot_hclust function
+plot_hclust(top100_genes, "Hierarchical Clustering of Top 100 Genes")
+plot_hclust(top1k_genes, "Hierarchical Clustering of Top 1000 Genes")
+plot_hclust(all_genes, "Hierarchical Clustering of All Genes")
+
+```
+<br> 
+
+**Discussion:**  
+The height scale changes among the dendrograms. The plot with all the genes has a height scale that goes up to about 250. The top 1000 genes height scale is around 60, and the top 100 genes has a height scale around 25. This compression on the top 100 genes plot indicates that using fewer, more variable genes reduces the overall distances between samples while maintaining the same clustering relationships.
+All three dendrograms from the top 100, 1000, and all of the genes, show a consistent two-branch structure at the highest level with the right branch containing 10 samples and the left branch containing 14 samples. Within each major branch, the fine-scale clustering patterns and heights change, but the general groupings remain stable. For example, the tight clustering of samples like GSM4467028, GSM4467029, and GSM4467032, are consistent across all three plots. This suggests that the primary biological signal distinguishing these sample groups is robust and captured even with fewer highly variable genes.   
+The consistency across different gene numbers suggests that the two main sample groups likely represent distinct biological conditions or cell types, and this distinction is driven by a core set of highly differentially expressed genes that are captured even when using only the top 100 most variable genes.
+<br> 
+<br>
+<br>
+  
+  
+# Principal Component Analysis  
+
+## Analysis on top 100 and top 100 non-normalized data  
+  
+Using the top 100 and top 1000 genes with highest variance, find the number of principal components accounting for the most variance in the data, e.g. 50% or 75% (total variance is the sum of variances along all PCs; sum of variances of k first principal components is the part they “account” for).   
+Describe how much this number of dimensions (explaining most of the variance in the data) changes for different number of genes considered. Examine structure in the data as revealed by visualizing in PC projection. Color points by any annotation features available (e.g. treatment, sex, batch, etc.) in a scatter plot (a 3D scatter plot will be best). Describe your findings.  
+<br>  
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+### Perform PCA ###
+
+## perform PCA on the top 100 genes 
+# scale the top100 data
+top100_scaled <- scale(top100_genes)
+# perform PCA
+top100_pca <- prcomp(top100_scaled)
+# view the PCA results
+top100_pca$x[1:5, 1:5]
+
+## perform PCA on the top 1000 genes 
+# scale the top100 data
+top1k_scaled <- scale(top1k_genes)
+# perform PCA
+top1k_pca <- prcomp(top1k_scaled)
+# view the PCA results
+top1k_pca$x[1:5, 1:5]
+
+
+# plot the PCA 
+plot(top100_pca, main = "PCA of the Top 100 Genes")
+plot(top1k_pca, main = "PCA of the Top 1000 Genes")
+
+```  
+<br>  
+
+
+## PCA analysis on top 100 and top 1000 *normalized* data  
+  
+Repeat this analysis with normalized data and compare the results. Describe which version produces the best results and explain why.
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## perform PCA on normalized top 100 and 1000 genes
+
+# convert to DGEList
+dge100 <- DGEList(counts = as.matrix(top100_genes))
+# apply TMM normalization so counts are comparable across samples
+# output is a vector of normalization factors
+dge100 <- calcNormFactors(dge100, method = "TMM")
+# get normalized counts (CPM)
+# log2 CPM for PCA
+top100_norm <- cpm(dge100, log = TRUE)
+# perform PCA
+top100_norm_pca <- prcomp(top100_norm)
+# view results
+top100_norm_pca$x[1:5, 1:5]
+
+
+# convert to DGEList
+dge.1k <- DGEList(counts = as.matrix(top1k_genes))
+# apply TMM normalization so counts are comparable across samples
+# output is a vector of normalization factors
+dge.1k <- calcNormFactors(dge.1k, method = "TMM")
+# get normalized counts (CPM)
+# log2 CPM for PCA
+top1k_norm <- cpm(dge.1k, log = TRUE)
+# perform PCA
+top1k_norm_pca <- prcomp(top1k_norm)
+# view results
+top1k_norm_pca$x[1:5, 1:5]
+
+
+# plot the PCA
+plot(top100_norm_pca, main = "PCA of the Normalized Top 100 Genes")
+plot(top1k_norm_pca, main = "PCA of the Normalized Top 1000 Genes")
+
+```  
+<br>  
+  
+## 3D Representation of PCA Analysis
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=10, fig.width=12, results='show', cache=FALSE}
+## Create a function for 3D PCA plotting of multiple datasets
+
+# this function takes multiple datasets and generates 3D PCA plots for each
+plot_3d_pca_multiple <- function(datasets, dataset_names, scale_data = TRUE, 
+                                 highlight_3d = TRUE, cex_symbol = 2, cex_text = 0.8) {
+  
+  # check if datasets and names have the same length
+  if (length(datasets) != length(dataset_names)) {
+    stop("Number of datasets must match number of dataset names")
+  }
+  
+  # make results list to store PCA results
+  pca_results <- list()
+  
+  # Loop through each dataset
+  for (i in 1:length(datasets)) {
+    cat("Generating 3D PCA plot for:", dataset_names[i], "\n")
+    
+    # get current dataset
+    current_data <- datasets[[i]]
+    current_name <- dataset_names[i]
+    
+    tryCatch({
+      # transpose the count matrix to look for any potential structure among the samples
+      # the function prcomp() performs PCA and scales the data
+      pca.rpm <- prcomp(t(current_data), scale = scale_data)
+      
+      # the function scatterplot3d() plots the 3D PCA by taking the first 3 principal components
+      sc3 <- scatterplot3d(pca.rpm$x[,1:3], pch=20, highlight.3d = highlight_3d, 
+                          cex.symbol = cex_symbol, 
+                          main = paste("3D PCA Plot of", current_name, "(Samples)"))
+      
+      # convert 3D coordinates to 2D for text placement
+      s3d.coords <- sc3$xyz.convert(pca.rpm$x[,1:3])
+      
+      # add the sample names to the plot by taking the x & y coordinates and the sample names
+      text(s3d.coords$x, s3d.coords$y, labels=colnames(current_data), 
+           pos=4, cex=cex_text)
+      
+      # store PCA results in the list object
+      pca_results[[current_name]] <- list(
+        pca_object = pca.rpm,
+        explained_variance = summary(pca.rpm)$importance[2, 1:3],  # First 3 PCs
+        total_variance_explained = sum(summary(pca.rpm)$importance[2, 1:3])
+      )
+      
+      cat("  - 3D PCA plot generated successfully\n")
+      cat("  - Variance explained by first 3 PCs:", 
+          round(pca_results[[current_name]]$total_variance_explained * 100, 2), "%\n")
+      
+    }, error = function(e) {
+      cat("  - Error generating 3D PCA plot:", e$message, "\n")
+      pca_results[[current_name]] <- paste("Error:", e$message)
+    })
+  }
+  
+  # return PCA results for further analysis if needed
+  return(pca_results)
+}
+
+# get all the data sets for 3D PCA analysis
+datasets_for_3d <- list(
+  top100_genes,
+  top1k_genes,
+  top100_norm,
+  top1k_norm
+)
+
+# assign names for the data sets that will become plot titles
+dataset_names_for_3d <- c(
+  "Top 100 Genes",
+  "Top 1000 Genes", 
+  "Top 100 Normalized",
+  "Top 1000 Normalized"
+)
+
+# generate 3D PCA plots for all data sets by executing the function
+cat("Starting 3D PCA analysis for multiple datasets...\n")
+pca_3d_results <- plot_3d_pca_multiple(
+  # call on the data sets being analyzed
+  datasets = datasets_for_3d,
+  # call on the names of the data sets
+  dataset_names = dataset_names_for_3d,
+  # parameter is set to scale each dataset
+  scale_data = TRUE,
+  # color the data points
+  highlight_3d = TRUE,
+  # size of data points
+  cex_symbol = 2,
+  # text size
+  cex_text = 0.8
+)
+
+# display summary for each 3D PCA result
+cat("\n3D PCA Analysis Summary:\n")
+for (dataset_name in names(pca_3d_results)) {
+  if (is.list(pca_3d_results[[dataset_name]])) {
+    cat("\nDataset:", dataset_name, "\n")
+    cat("  - Variance explained by PC1:", round(pca_3d_results[[dataset_name]]$explained_variance[1] * 100, 2), "%\n")
+    cat("  - Variance explained by PC2:", round(pca_3d_results[[dataset_name]]$explained_variance[2] * 100, 2), "%\n")
+    cat("  - Variance explained by PC3:", round(pca_3d_results[[dataset_name]]$explained_variance[3] * 100, 2), "%\n")
+    cat("  - Total variance explained by first 3 PCs:", 
+        round(pca_3d_results[[dataset_name]]$total_variance_explained * 100, 2), "%\n")
+  } else {
+    cat("\nDataset:", dataset_name, "-", pca_3d_results[[dataset_name]], "\n")
+  }
+}
+```
+<br>  
+
+  
+  
+**Discussion:**  
+The results of non-normalized PCA analysis show similar variance concentration between the top 100 and top 1000 gene selection. The first 3 principal components in the top 100 and 1000 genes each explain ~69% of variance. This pattern suggests highly efficient dimensionality reduction, and that there is high-quality, distinct biological conditions. With similar percentages (~69%) this indicates the top 100 genes captures essentially the same biological signals as the top 1000 genes. Which means that the biological differences between sample groups are driven by a small set of highly variable genes. If more genes are added, it would probably introduce more noise rather than something biologically meaningful.  
+Looking at the 3D plots of the top 100 and 1000 genes, the same sample groupings appear in both plots, confirming that the primary biological signal is captured by highly variable genes and is stable across both selection criteria. In both plots, groupings are clearly separated, and matches the hierchical clustering results, suggesting a strong, and consistent biological distinction. Using fewer, more variable genes (top 100 vs. top 1000) results in variance being more concentrated in the leading principal components, reducing the dimensionality needed to capture most biological signals. The fact that such small number of genes (100) can captures the same variance structure as 10x more genes indicates that there is strong differential expression between conditions, and there is low technical noise.  
+  
+  
+The result of the normalized PCA analyses showed that the number of dimensions needed to explain variance markedly changes when considering more genes. For the top 100 genes, one principal component is sufficient to explain almost 50% (~49%) of variance, and 3 principal components to explain almost 75% (~71%). While the top 1000 genes needs two principal components to explain >50% (~58%) of variance, and likely 4 principal components to explain 75%. This indicates that including more genes increased the effective dimensionality of the dataset, where the top 100 represents a lower dimensional signal, and more dimensions are needed to capture additional biological complexity in the top 1000 genes.  
+Looking at the 3D plots for the normalized data, it seems that data points have a more refined and cleaner separation, as the normalization process probably helped to clarify some of the sample relationships. Sample GSM4647041 appear to be a consistent outlier here, and even in the non-normalized plots -- this suggests that this sample has a distinct expression characteristics that is preserved across the different processes. The top 100 genes captured less noise and a more concentrated signal dominated by PC1. While the top 1000 genes added more layers of variation that required additional dimensions to adequately capture the variance. Thus the PCA analysis with the normalized dataset seems to be the better approach as it produced cleaner separation and clearer sample relationships based on the principal components.  
+<br>
+<br>
+
+# K-means clustering  
+  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Perform k-means clustering ###
+
+# take the top 100 genes and standardize the data
+head(top100_scaled)
+
+## Elbow method
+# the function fviz_nbclust() performs the linkage methods to determine the 
+# optimal number of clusters.
+# the function kmeans() performs k-means clustering to cluster the data
+# the parameter 'method' is set to the linkage methods
+# the function labs() adds a subtitle to the plot
+set.seed(123)
+fviz_nbclust(top100_scaled, kmeans, method = "wss") + 
+    labs(subtitle = "Elbow Method")
+
+fviz_nbclust(top100_scaled, kmeans, method = "silhouette") +
+    labs(subtitle = "Silhouette Method")
+
+fviz_nbclust(top100_scaled, kmeans, method = "gap_stat", nstart = 10, nboot = 25) +
+    labs(subtitle = "Gap Statistic method")
+
+```
+
+The elbow method shows the most decline from k=1 to k=2 and a noticeable elbow at k=2. Although there is a secondary elbow between k=4 and k=5, it is not as steep as k=2.  
+The silhouette method shows a max peak at k=2 and the average silhouette width approaches 1, indicating a high-quality clustering. The silhouette width measures how the clusters are well-separated and cohesive -- higher values mean samples are well-matched to their clusters and poorly matched to neighboring clusters.  
+The Gap statistic shows a clear maximum at k=3 clusters. Gap statistics measures how much better the clustering performs compared to random data, and the peak at k=3 indicates this is where the data structure is most distinct from random noise.  
+Despite alignment of k=2 clusters from the elbow and silhouette methods, Gap Statistics show marginal difference between k=2 and k=3 based on the error bars. Therefore, the optimal cluster is set to k=3 for further analysis.  
+<br>  
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=10, fig.width=12, results='show', cache=FALSE}
+
+# transpose the data
+top100_transposed <- t(top100_scaled)
+top100_transposed[1:5, 1:5]
+
+# the function kmeans() performs k-means clustering to cluster the data
+# the parameter 'centers' sets the number of optimal clusters, k=3, based
+# on the Gap Statistics method.
+my_kmeans <- kmeans(top100_transposed, centers = 3, nstart = 25)
+# plot the k-means clustering
+# the function inputs the k-means clustering results and the data
+# the function fviz_cluster() plots the k-means clustering
+fviz_cluster(my_kmeans, data = top100_transposed)
+
+```  
+<br>  
+  
+**Discussion:**  
+The k=3 clustering reveals a meaningful subdivision of three distinct main groups plotted in the first two principal components -- which explains ~38% and ~17% of variance respectively. Despite the lower silhouette score at k=3, the visual separation in the PCA space shows reasonably well-defined boundaries between all three clusters, with cluster 1 being particularly well-isolated.  
+Cluster 2 (green) likely represents one distinct biological condition, while Clusters 1 (orange) and 3 (blue) represents the second main condition but with two distinct subtypes. This clustering aligns with the biological conditions stated in the research study (GEO accession no. GSE153555) from which this dataset was obtained. The samples in Cluster 3 (blue) are identified as the normal aortic valve condition. Whereas the samples in Cluster 2 are identified as abnormal aortic valve condition with a severe subtype, and the samples in Cluster 1 are also identified as abnormal aortic valve condition with a moderate subtype. Therefore, the k-means clustering was successful in capturing the molecular differences of different biological groups.
