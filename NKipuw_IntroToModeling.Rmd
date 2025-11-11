@@ -1,0 +1,444 @@
+---
+title: RBIF112 - Assignment 1
+author: "Author: Nessy Kipuw"
+date: "Last update: `r format(Sys.time(), '%d %B, %Y')`" 
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+---
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+homedir <- "H:/My Drive/RBIF112/wk1/HW_files" # object containing a home directory path in R ( in this code chunk), and in python (The next code chunk).
+setwd(homedir)
+library(reticulate) # required package for the execution of python code from R.
+# check the path of python
+# here for example: if you have a conda env where python is installed, you can activate the conda env and find the path to the python: `which python`
+use_python("C:/Users/nessi/miniconda3/envs/hw1/python.exe") # Path to the directory where python is stored on your computer.  
+```
+
+
+```{python, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+import os 
+homedir = "H:/My Drive/RBIF112/wk1/HW_files"
+#os.chdir(homedir)
+```
+<br>
+<br>
+
+
+# Human HPRD table at the UCSC web portal
+
+## a. Download the HPRD table and load the data into R session  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+# load package
+library(tidyverse)
+
+# load table into R session & view table
+Hu.HPRD = read.table("Human-HPRD.gz",sep="\t",as.is=T,comment="",header=T,quote="")
+as_tibble(Hu.HPRD[1:5,])
+
+# load table into R session & view table
+kgxref=read.table("kgXref.txt",sep="\t",as.is=T,comment="",header=T,quote="")
+as_tibble(kgxref[1:5,1:8])
+```
+<br>  
+
+
+## b. Replace the transcript IDs of the both interaction partners in each row of HPRD table with gene symbols by joining the table with kgXref table (described in the Notes)
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+# load package
+library(dplyr)
+
+# merge the first column from Hu.HPRD table
+m1 = merge(Hu.HPRD, kgxref, by.x = "X.query", by.y = "X.kgID")
+colnames(m1)[7] <- "geneSymbol.query"  # change the gene ID column name
+
+# merge the second column from Hu.HPRD table
+m2 = merge(m1, kgxref, by.x = "target", by.y = "X.kgID")
+colnames(m2)[ncol(m2)-5] <- "geneSymbol.target"  # change the gene ID column name
+
+# create final table
+m3 = m2[, c("geneSymbol.query", "geneSymbol.target", "distance")]
+
+# sort in descending order
+m4 = m3[order(-m3$distance), ]
+as_tibble(m4[1:10,1:3])
+```
+<br>  
+<br>
+  
+# Download dataset from GEO  
+  
+The code below will download a data set from GEO.  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=8, results='show', cache=FALSE}
+library(GEOquery)
+library(org.Hs.eg.db)   # Human-specific annotation
+library(AnnotationDbi)
+
+
+GEODataDownload <- function(DS, gpl, gsm, PlateAnnotInfo, GenerateMetaData, Technology){
+  library(DESeq2); library(limma); library(data.table)
+  if(Technology == "Array"){
+    gset <- getGEO(DS)
+    if(length(gset) > 1) idx <- grep(gpl, attr(gset, "names")) else idx <- 1
+    gset <- gset[[idx]]
+    fvarLabels(gset) <- make.names(fvarLabels(gset))
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up raw names ####
+    sml <- c()
+    for(i in 1:nchar(gsms)){ sml[i] <- substr(gsms,i,i)}
+    ex <- exprs(gset)
+    qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+    LogC <- (qx[5] > 100) ||
+      (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+      (qx[2] > 0 && qx[2] < 1 && qx[4] < 2)
+    if(LogC){ ex[which(ex <= 0)] <- NaN
+    exprs(gset) <- log2(ex) }
+    sml <- paste("G", sml, sep="")
+    f1 <- as.factor(sml)
+    gset$description2 <- f1
+    design <- model.matrix(~description2 + 0, gset)
+    colnames(design) <- levels(f1)
+    fit <- lmFit(gset, design)
+    cont.matrix <- makeContrasts(G1-G0, levels = design)
+    fit2 <- contrasts.fit(fit, cont.matrix)
+    fit2 <- eBayes(fit2, 0.01)
+    tT <- topTable(fit2, adjust="fdr", sort.by = "B", number = 25000000000)
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("ID", "logFC", "P.Value", "adj.P.Val")))
+    ex2$ID <- as.character(ex2$ID)
+    #### annotate with gene names ####
+    plat <- PlateAnnotInfo[GPLID == gpl,][,!"GPLID", with = FALSE]
+    if(nrow(plat) == 0){ print(paste("There is no annotation information available for", gpl)) }
+    plat$ID <- as.character(plat$ID)
+    plat <- plat[!duplicated(plat$ID),]
+    ex2 <- merge(plat, ex2, by = "ID")
+    ex2$ID <- as.character(ex2$ID)
+    exraw <- data.table(ex)
+    exraw$ID <- as.character(rownames(ex))
+    #### annotate raw data with gene names ####
+    ex2 <- merge(ex2, exraw, by = "ID")
+    #### Generate Meta Data ####
+    Pdat <- pData(gset)
+    #### Add Meta data ####
+    Pdat <- as.data.table(Pdat)
+    return(list(Data = ex2, MetaData = Pdat))
+  }
+  
+  if(Technology == "RNAseq"){
+    ACC <- paste("acc=", DS, sep = "")
+    file <- paste("file=", DS, "_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep = "")
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up DEG names ####
+    urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+    path <- paste(urld, ACC, file, sep="&");
+    tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+    exraw <- tbl 
+    apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+    annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+    rownames(annot) <- annot$GeneID
+    sml <- strsplit(gsms, split="")[[1]]
+    sel <- which(sml != "X")
+    sml <- sml[sel]
+    tbl <- tbl[ ,sel]
+    gs <- factor(sml)
+    groups <- make.names(c("Ctrl", "Tx"))
+    levels(gs) <- groups
+    sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+    keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+    tbl <- tbl[keep, ]
+    ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+    ds <- DESeq(ds, test="Wald", sfType="poscount")
+    r <- results(ds, contrast=c("Group", groups[2], groups[1]), alpha=0.05, pAdjustMethod ="fdr")
+    tT <- r[order(r$padj)[1:length(r$padj)],]
+    tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+    tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("GeneID", "Symbol", "Description", "log2FoldChange", "pvalue", "padj")))
+    #### Adjust column names ####
+    setnames(ex2, c("GeneID", "Symbol", "Description"), c("ENTREZID", "SYMBOL", "GENENAME"))
+    #### Get Raw data ####
+    GeneID <- as.integer(rownames(exraw))
+    exraw <- as.data.table(exraw)
+    #### Update column names ####
+    exraw$ENTREZID <- GeneID
+    #### merge FC and raw data together ####
+    mer <- merge(ex2, exraw, by = "ENTREZID")
+    return(mer)
+  }
+}
+
+
+# Execute the GEODataDownload function and obtain the RNAseq data set
+RNAseqData <- GEODataDownload(DS = "GSE220979",
+                              gpl = "GPL24676",
+                              gsm = "0011",
+                              PlateAnnotInfo = "Only needed if the data was generated using MicroArrays",
+                              GenerateMetaData = "Only needed if the data was generated using MicroArrays",
+                              Technology = "RNAseq")
+data.table(head(as.data.frame(RNAseqData),10), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+# Save the RNAseq data set to the working directory
+saveRDS(RNAseqData, file = "~/RNAseq_GSE220979.rds")
+
+# Reload the file into R environment
+GSE220979 <- readRDS("~/RNAseq_GSE220979.rds")
+dim(GSE220979)
+```
+<br>  
+  
+The code below will download the gene annotation and append it to the dataset.  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+# get the row names from dataset
+gene_ids <- GSE220979$SYMBOL
+
+# map to gene symbol using AnnotationDbi::select 
+annotations <- AnnotationDbi::select(org.Hs.eg.db, 
+                                   keys = gene_ids, 
+                                   columns = c("ENSEMBL", "SYMBOL", "GENENAME"), 
+                                   keytype = "SYMBOL")
+head(annotations)
+# check the dimensions of the annotations
+dim(annotations)
+# check for duplicates
+sum(duplicated(annotations$SYMBOL))
+# delete duplicates
+annotations_2 <- annotations[!duplicated(annotations$SYMBOL),]
+# check the dimensions of annotations_2
+dim(annotations_2)
+
+
+# append the annotation to the dataset
+GSE220979_2 <- merge(GSE220979, annotations_2[,c("ENSEMBL", "SYMBOL")], by = "SYMBOL")
+# relocate the ENSEMBL column after the SYMBOL column
+GSE220979_2 <- GSE220979_2 %>% relocate(ENSEMBL, .after = SYMBOL)
+
+head(GSE220979_2)
+# check the dimensions of the dataset
+dim(GSE220979_2)
+```
+<br>  
+<br>
+  
+# Summarized Experiment object  
+  
+The code below will create a summarized experiment object using ENSEMBL ID, that was annotated in Question 2, as the row data and the RNAseq data.  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+library(SummarizedExperiment)
+
+# get column names of GSE220979_2 data set
+print(colnames(GSE220979_2))
+# specify which columns are count data (numeric columns that are not annotation)
+numeric_cols <- sapply(GSE220979_2, is.numeric)
+annotation_cols <- c("ENTREZID", "SYMBOL", "ENSEMBL", "GENENAME", "log2FoldChange", "pvalue", "padj")
+count_cols <- names(GSE220979_2)[numeric_cols & !(names(GSE220979_2) %in% annotation_cols)]
+print(count_cols)
+
+# convert the dataset as a data frame first
+GSE220979_3 <- as.data.frame(GSE220979_2)
+
+
+## create the components for Summarized Experiment object ##
+# 1. create row data (gene annotations)
+# although the ENSEMBL ID was the added annotation in the previous question,
+# there are duplicate ENSEMBL IDs, so the SYMBOL column is used to identify the unique rows
+row_data <- GSE220979_3[, c("ENSEMBL", "GENENAME", "ENTREZID")]
+rownames(row_data) <- GSE220979_3$SYMBOL
+
+# 2. create count matrix
+count_matrix <- as.matrix(GSE220979_3[, count_cols])
+rownames(count_matrix) <- GSE220979_3$SYMBOL
+
+
+# 3. create column data or the sample metadata
+# there are 2 types of samples: control (0) and treatment (1)
+col_data <- data.frame(
+  Sample = count_cols,
+  Group = c("Control", "Treatment"),  # Based on gsm pattern
+  Condition = c("Ctrl", "Tx"),
+  row.names = count_cols
+)
+
+# combine components 1-3 to create Summarized Experiment object
+my_SE <- SummarizedExperiment(
+  assays = list(counts = count_matrix),
+  rowData = row_data,
+  colData = col_data
+)
+
+# show the Summarized Experiment object
+print(my_SE)
+
+# access different components
+print("Column data:")
+colData(my_SE)
+
+print("Row data:")
+head(rowData(my_SE))
+
+print("Assay:")
+head(assay(my_SE))
+
+
+# Save the SummarizedExperiment object (optional)
+#saveRDS(my_SE, file = "~/GSE220979_SummExpt.rds")
+
+```
+<br>  
+<br>  
+
+  
+# Summary Statistics  
+
+## Calculations  
+  
+The codes below will print out the column and row wise summary statistics of the downloaded data set using base R. In combination with base R, I used *matrixStats* package to get both row-wise and column-wise summary statistics. By using a loop function, the three main stats: Sum, Mean, and Median, were calculated and compiled into one table for each, providing fast and convenient results.  
+  
+### Row-wise summary statistics  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+## Row-wise summary statistics with matrixStats package
+library(matrixStats)
+
+# define functions to apply
+row.stats_list <- list(
+  Sum    = rowSums,
+  Mean   = rowMeans,
+  Median = rowMedians,
+  SD = rowSds,
+  Min = rowMins,
+  Max = rowMaxs
+)
+
+# apply across all functions
+row.stat.func <- lapply(names(row.stats_list), function(stat) {
+  fun <- row.stats_list[[stat]]
+  df <- data.frame(Value = fun(assay(my_SE)))
+  colnames(df) <- stat
+  df$Sample <- rownames(assay(my_SE))
+  return(df)
+})
+
+# combine into one table
+row.Stats <- Reduce(function(x, y) merge(x, y, by = "Sample"), row.stat.func)
+row.Stats[1:10,]
+```
+<br>  
+
+### Column-wise summary statistics  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+## Column-wise summary statistics with matrixStats package
+# define functions to apply
+stats_list <- list(
+  Sum    = colSums,
+  Mean   = colMeans,
+  Median = colMedians,
+  SD = colSds,
+  Min = colMins,
+  Max = colMaxs
+)
+
+# apply across all functions
+stats <- lapply(names(stats_list), function(stat) {
+  fun <- stats_list[[stat]]
+  df <- data.frame(Value = fun(assay(my_SE)))
+  colnames(df) <- stat
+  df$Sample <- rownames(df)
+  return(df)
+})
+
+# combine into one table
+col.Stats <- Reduce(function(x, y) merge(x, y, by = "Sample"), stats)
+col.Stats
+```
+<br>  
+
+## Visualization of the results  
+### Column-wise summary statistics
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=10, fig.width=8, results='show', cache=FALSE}
+# Bar plots to visualize the column-wise summary statistics
+# Sum distribution
+barplot(col.Stats$Sum,
+        names.arg = col.Stats$Sample,
+        main = "Distribution of Sum",
+        xlab = "Sample",
+        ylab = "Sum")
+
+# Mean distribution
+barplot(col.Stats$Mean,
+        names.arg = col.Stats$Sample,
+        main = "Distribution of Mean",
+        xlab = "Sample",
+        ylab = "Mean")
+
+# Median distribution
+barplot(col.Stats$Median,
+        names.arg = col.Stats$Sample,
+        main = "Distribution of Median",
+        xlab = "Sample",
+        ylab = "Median")
+
+```
+<br>  
+  
+This study (GEO accession: GSE220979) aimed to study the expression changes of CD9-overexpressing SEM cells after Dexamethoasone treatment by looking at RNA-seq data. GSM6833488 and GSM6833489 are the controls. GSM6833490 and GSM6833491 are the treatment samples.  
+The bar plot of the Sum show that the treatment samples have in total lower expression compared to the controls. The Mean distribution follows a similar trend to the Sum, showing highest average expression in one of the controls, and lower average expression in the treatment samples. The Median distribution shows that the central matches the Mean. The treated sample, GSM6833491, stands out because it is consistently lower in results across the summary statistics overall, suggesting the observation is not a skewed distribution and might be the impact of the treatment.  
+<br>  
+  
+
+### Row-wise summary statistics
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=10, fig.width=8, results='show', cache=FALSE}
+# convert to long format to plot histogram
+row.Stats.long <- row.Stats %>%
+  pivot_longer(cols = c(Sum, Mean, Median),
+               names_to = "Statistic",
+               values_to = "Value")
+
+# plot histograms
+ggplot(row.Stats.long, aes(x = Value, fill = Statistic)) +
+  geom_histogram(bins = 100, alpha = 0.8, position = "identity") +
+  facet_wrap(~ Statistic, scales = "free") +
+  labs(title = "Distribution of Row-wise Statistics",
+       x = "Value",
+       y = "Count") +
+  theme_minimal()
+```
+<br>  
+  
+All three histograms have very long tails towards the right, and most genes have very low expression values -- close to zero for all statistics shown. Only a very small amount of genes are greater-than zero. The distribution of the Sum show that a large number of genes have small total expression values. With an expression profile like this, it is worth it to normalize the data first to determine significant differential expression. At this point, it looks like there is little expression and all are trending the same way.  
