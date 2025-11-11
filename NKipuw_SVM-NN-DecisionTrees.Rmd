@@ -1,0 +1,719 @@
+---
+title: "RBIF112 - Final Assignment"
+author: "Neshita Kipuw"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+---  
+
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=12, results='hide', cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+homedir <- "H:/My Drive/RBIF112/wk6-7/HW-files" # object containing a home directory path in R.
+setwd(homedir)
+```
+<br>
+<br>
+
+# TCGA Data  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='fold-hide', cache=FALSE}
+# load packages
+library(TCGAbiolinks)
+library(EDASeq)
+library(tibble)
+
+##########################################
+#### Download and prepare target case ####
+##########################################
+TCGAbiolinks:::getProjectSummary("TCGA-KIRC")
+#### Downloading and prepare TARGET CASE ####
+TargetSamples <- GDCquery(project = "TCGA-KIRC", 
+                         data.category = "Transcriptome Profiling", 
+                         data.type = "Gene Expression Quantification",
+                         workflow.type = "STAR - Counts")
+#### obtain case information ####
+CaseInfo <- getResults(TargetSamples)
+head(CaseInfo)
+#### subset samples so that there is an equal number of cancer and control samples ####
+dataPrimary_Target <- TCGAquery_SampleTypes(barcode = CaseInfo$cases, typesample = "TP") # primary tumor
+dataNormal_Target <- TCGAquery_SampleTypes(barcode = CaseInfo$cases, typesample = "NT") # normal tissue
+dataPrimary_Target <- dataPrimary_Target[1:72]
+dataNormal_Target <- dataNormal_Target[1:72]
+#### downloaded samples of interest ####
+TargetSamples <- GDCquery(project = "TCGA-KIRC",
+                             data.category = "Transcriptome Profiling",
+                             data.type = "Gene Expression Quantification",
+                             workflow.type = "STAR - Counts",
+                             barcode = c(dataPrimary_Target, dataNormal_Target))
+
+#GDCdownload(TargetSamples)  ## This is already downloaded
+
+
+#############################################
+#### Create summarized experiment object ####
+#############################################
+data <- GDCprepare(TargetSamples)
+assays(data)
+#colData(data)
+#rowData(data)
+table(rowData(data)$gene_type)
+
+############################################
+#### Subset summarizedExperiment object ####
+############################################
+SECoding <- data[rowData(data)$gene_type == "protein_coding", ]
+
+```
+<br>
+<br>  
+  
+# Data Exploration  
+  
+## Gene Correlation Analysis  
+  
+Gene correlation analysis was performed between gene expression values and three continuous clinical variables: days to death (a measure of patient survival), days to last follow up, and patient age at diagnosis/sample collection. After normalization, correlation coefficients were calculated for each gene against these clinical variables, then adjusted for multiple testing resulting in the adjusted p-values. The goal was to identify genes whose expression levels change consistently with these clinical features, which can highlight potential biomarkers related to survival or aging in kidney cancer.  
+<br>
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+### Gene Correlation Analysis ###
+# load packages
+library(SummarizedExperiment)
+library(dplyr)
+library(tibble)
+library(purrr)
+library(preprocessCore)
+
+
+# 1. Extract expression matrix & perform quantile normalization
+expr_all <- assay(SECoding)
+expr_norm <- normalize.quantiles(as.matrix(expr_all))
+rownames(expr_norm) <- rownames(expr_all)
+colnames(expr_norm) <- colnames(expr_all)
+
+# 2. Extract metadata
+meta <- as.data.frame(colData(SECoding))
+colnames(meta)
+# for any n/a or invalid number values in days_to_death column, replace with zero
+meta$days_to_death[is.na(meta$days_to_death)] <- 0
+
+
+# Example continuous variables of interest
+vars <- c("days_to_death", "days_to_last_follow_up", "age_at_index")
+
+# Ensure they exist
+vars <- vars[vars %in% colnames(meta)]
+
+# 3. Prepare output container
+results <- list()
+
+# 4. Loop through continuous variables
+for (i in vars) {
+  # get the variables of interest
+  y <- meta[[i]]
+  
+  # Keep only non-missing samples
+  valid_samples <- which(!is.na(y))
+  # subset the expression matrix for the valid samples
+  expr_sub <- expr_norm[, valid_samples, drop = FALSE]
+  # subset the variables of interest for the valid samples
+  y_sub <- y[valid_samples]
+  
+  # Correlation per gene
+  # will apply a function to each row of the expression matrix
+  res <- apply(expr_sub, 1, function(x) {
+    # calculate the spearman correlation between the expression and the variables
+    ct <- suppressWarnings(cor.test(x, y_sub, method = "spearman"))
+    # return the correlation and p-value
+    c(cor = unname(ct$estimate),
+      pval = ct$p.value)
+  })
+  # convert the results to a data frame
+  res <- as.data.frame(t(res))
+  # add the gene id and gene name
+  res$gene_id <- rowData(SECoding)$gene_id
+  # add the gene name
+  res$gene_name <- rowData(SECoding)$gene_name
+  # add the variable
+  res$variable <- i
+  # add the adjusted p-value
+  res$padj <- p.adjust(res$pval, method = "fdr")
+  # add the results to the list
+  results[[i]] <- res
+}
+
+# 5. Combine into one dataframe
+cor_results <- bind_rows(results)
+
+# 6. Show top hits
+top_hits <- cor_results %>%
+  # take correlation results and arrange by adjusted p-value and absolute correlation
+  arrange(padj, desc(abs(cor))) %>%
+  # select the gene id, gene name, variable, correlation, p-value, and adjusted p-value
+  select(gene_id, gene_name, variable, cor, pval, padj)
+
+print(head(top_hits, 20))
+
+paste("After correlation analysis, the most significant gene is:", top_hits$gene_name[1])
+
+```
+  
+**Discussion:**  
+The top 20 results of the gene correlation analysis show absolute correlation coefficients range from 0.33-0.40, which is modest but perhaps still meaningful. The raw p-values are signficant (between 10^-5 and 10^-7), but after multiple testing correction only a few of the adjusted p-values have FDR < 0.05. The rest are around 0.06-0.07, which are not significant.  
+There are 8 genes at the top that have negative correlations with "days to death" variable, which indicates that higher expression is linked to shorter survival. This suggests that some of those top genes (e.g., BSPH1, OR10G3, AC008763.4, etc.) might be involved in tumor aggresiveness, immune evasion, or cancer cell proliferation.  
+Only two genes are revealed to be correlated to "days to last follow up" variable, with one positive and one negative correlation. A quick search on NCBI show that MANF is a stress response gene, and down-regulation might relate to longer survival (i.e., implying that it's up-regulated in disease state). While SLC35B4 gene is involved in nucleotide sugar transport, and suggesting that up-regulation may relate to normal metabolic maintenance, i.e., consistent with better follow-up duration.  
+Genes correlated with "age at index" variable may reflect age-related transcriptional shifts rather than disease severity, and all have positive correlations -- which means the expression increases with age. These genes may represent age-related expression instead of disease expression, suggesting that older patients may exhibit specific gene expression signatures that are different from younger patients.
+Correlations are modest but biologically meaningful, highlighting genes potentially tied to patient outcome and aging. However, the correlation coefficients may be improved with *filtering to exclude noise and batch effects*, as these were not performed prior to the analysis.
+<br>
+<br>
+  
+## Variance Analysis  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Gene Variance ##
+
+# 1. Get pre-normalized data & filter out zero expression values
+expr_mat <- expr_all %>%
+  as.data.frame() %>%
+  filter_all(~ . > 5)
+# quantile normalize the data
+expr_norm2 <- normalize.quantiles(as.matrix(expr_mat))
+rownames(expr_norm2) <- rownames(expr_mat)
+colnames(expr_norm2) <- colnames(expr_mat)
+
+
+# 2. Compute variance for each gene across samples
+# var() function will calculate the variance of each row
+gene_vars <- apply(expr_norm2, 1, var, na.rm = TRUE)
+
+# 3. Combine with gene metadata
+# data.frame() function will create a data frame from the gene id,
+# gene name, and variance
+var_df <- data.frame(
+  gene_id = rownames(expr_norm2),
+  gene_name = rowData(SECoding)[rownames(expr_norm2),]$gene_name,
+  variance = gene_vars
+)
+
+# 4. Rank genes
+# arrange() function arranges the results by variance in descending order
+# head() function selects the top 5 results
+top_var_genes <- var_df %>%
+  arrange(desc(variance)) %>%
+  head(20)
+
+low_var_genes <- var_df %>%
+  arrange(variance) %>%
+  head(20)
+
+print("Top variable genes:")
+print(top_var_genes)
+
+print("Lowest variable genes:")
+print(low_var_genes)
+
+
+# filter out genes with variance less than 500
+var_df2 <- var_df %>%
+  filter(variance > 500) %>%
+  arrange(desc(variance))
+head(var_df2, 20)
+
+paste("After gene variance analysis and filtering out genes with variance less than 100, the most significant gene is:", var_df2$gene_name[1])
+
+# assign top gene to a variable
+top_var_id <- top_var_genes$gene_id[1]
+top_var_20 <- top_var_genes$gene_id[1:20]
+
+```
+  
+**Discussion:**  
+Variance analysis was performed to identify which genes show the most variation between samples. By first applying quantile normalization on the entire gene expression, the expression distributions are made comparable across all samples and removed intensity as well as any technical biases. The subsequent filtering out variance values <500 helps to reduce the noise in the data and computational load, as these genes are likely non-informative, thereby keeping meaningfully different genes across samples that can capture biological differences between tumor and normal expression.  
+High variance genes reflect biological heterogeneity, as most top-variance genes are mitochondrial genes, immune-related genes, and structural genes related to tumor microenvironment differences. This indicates that the largest sources of variation across samples in the kidney cancer data are related to energy metabolism, immune composition, and tumor-stromal interactions.  
+A cluster of mitochondrial genes (e.g., MT-NDs, -COs, -CYB, etc.) dominating the top list suggests metabolic reprogramming and differences in mitochondrial content or activity among samples. In kidney cancer, mitochondrial pathways are often altered due to VHL mutations[1] and hypoxia-driven metabolic shifts, explaining their high variance.  
+High variance in immune genes (e.g., CD74, B2M, C3, etc.) and extra-cellular matrix genes (e.g., FN1, TGFBI, SPARC, SPP1, etc.) shows that samples vary widely in immune cell infiltration levels and tumor microenvironment[1] remodeling. This aligns with the biology of kidney tumors, which range from immune-hot (inflamed) to immune-cold (poorly infiltrated), and have different stromal compositions.
+  
+References:  
+[1] Beksac, A.T., Paulucci, D.J., Blum, K.A., Yadav, S.S., Sfakianos, J.P. and Badani, K.K., 2017, August. Heterogeneity in renal cell carcinoma. In Urologic Oncology: Seminars and Original Investigations (Vol. 35, No. 8, pp. 507-515). Elsevier.
+<br>
+<br>
+  
+## Principal Component Analysis  
+  
+Principal component analysis was performed using the (normalized) expression data based on the results of variance analysis above and after filtering out the low variance genes. 
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+library(ggplot2)
+
+# 1. get the expression matrix (normalized)
+expr_norm3 <- expr_norm[rownames(var_df2), ]
+
+# 2. scale the data
+expr_scaled <- t(scale(t(expr_norm3)))
+# transpose the expression matrix
+expr_transpose <- t(expr_scaled)
+
+# 3. perform PCA
+pca_result <- prcomp(expr_transpose, scale. = FALSE)
+
+# 4. prepare data for plotting
+# create a data frame from the PCA results and the sample attributes
+pca_df <- data.frame(pca_result$x,
+                     colData(SECoding))
+
+# plot PCA colored by a sample attribute (e.g. shortLetterCode)
+# aes() function is used to map the variables to the x and y axes
+# geom_point() function is used to create a scatter plot
+# theme_minimal() function is used to create a minimal theme
+# labs() function is used to add labels to the plot
+ggplot(pca_df, aes(x = PC1, y = PC2, color = shortLetterCode)) +
+  geom_point(size = 3, alpha = 0.7) +
+  theme_minimal() +
+  labs(title = paste("PCA of Filtered Gene Expression"),
+       x = paste0("PC1 (", round(100*summary(pca_result)$importance[2,1], 1), "% var)"),
+       y = paste0("PC2 (", round(100*summary(pca_result)$importance[2,2], 1), "% var)"))
+```
+<br>  
+**Discussion:**  
+Based on the PCA plot above, the first two PCs capture the largest sources of variation (~32%) in the dataset, where PC1 explains 22.8% of the total variance and PC2 explains 9.4%. The samples clearly form two distinct clusters. The right cluster (pink) is dominated by normal tissue (NT) samples, and the left cluster (blue) is dominated by primary tumor (TP) samples. The separation along PC1 is strong and consistent, indicating the largest variation in the filtered data corresponds to tumor vs. normal tissue. Only a small number appear to be mixed points and are possibly due to sample heterogeneity.  
+The variance filtering was effective, reducing background noise and retaining only genes with meaningful differences. The resulting PCA show distinct clustering and enhancing the signal-to-noise. The distinct separation between NT and TP groups along PC1 shows that the filtered high-variance genes effectively captured biologically relevant signals. These genes are driving most of the expression variability, confirming that tumor samples have very different transcriptional profiles compared to normal kidney tissue. 
+<br>  
+  
+During PCA of a gene expression matrix, PCA finds the principal components -- the linear combinations of the original gene expression variables that capture the maximum variance in the data -- and each PC is defined by a **loading vector**, which specifies how much each gene contributes to that principal component. A high loading value (positive or negative) means the gene strongly contributes to that component. A low loading means the gene has little influence on that PC’s direction of variance.  
+Therefore, the code below will identify the PCA loads from the PCA model to extract the genes that are significantly driving the separation patterns seen in the plot. These genes will be used as the input dataset for the prediction models in subsequent analyses.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+# 5. find the most significant genes in PC1 and PC2
+# get the loadings and make a data frame
+pca_loads <- as.data.frame(pca_result$rotation)
+# attach gene information to loadings
+pca_loads$gene_id <- var_df2$gene_id
+pca_loads$gene_name <- var_df2$gene_name
+
+# 5.1.subset top 20 genes in PC1
+pc1_gene <- pca_loads %>%
+  as.data.frame() %>%
+  # arrange by absolute value of PC1
+  arrange(desc(PC1)) %>%
+  # select the top 20 genes
+  head(20) %>%
+  # select the gene id, gene name, and PC1
+  select(gene_id, gene_name, PC1)
+# print genes in PC1
+pc1_gene
+
+# 5.2.get the most significant gene in PC2
+pc2_gene <- pca_loads %>%
+  as.data.frame() %>%
+  arrange(desc(PC2)) %>%
+  head(20) %>%
+  select(gene_id, gene_name, PC2)
+# print genes in PC2
+pc2_gene
+
+```
+The result of loadings for PC1 shows that they are all positive and relatively close in magnitude (around 0.016-0.017), indicating that no single gene dominates PC1. Similarly for PC2, they are all positive and the magnitude are around 0.025.  
+The resulting data sets from PC1 and PC2 will serve as the data input for building the models below. The genes from PC2 may be included in the model to determine whether it could improve the model performance; otherwise, it will be left out and only genes from PC1 will be included.  
+<br>
+<br>
+  
+# Model Development    
+  
+The codes below will define the outcome variable, prepare the expression data for modeling based on the PCA loadings results, and define the function to assess the predictions from various models.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+## Define outcome variable for modeling
+# create a new column in the meta data frame with the outcome
+# if the sample type is tumor the outcome is 1, otherwise it's 0
+meta$kidney_cancer <- ifelse(grepl("Tumor", meta$sample_type, ignore.case = TRUE), 1, 0)
+
+# count the number of 1s and 0s in the outcome to check balance
+table(meta$kidney_cancer)
+
+# convert data frame to a factor
+outcome <- meta$kidney_cancer
+outcome <- factor(outcome, levels = c(0,1))
+head(outcome)
+
+
+## Prepare data for modeling ##
+# get the genes from PCA
+# need matrix array as input for logistic regression
+pc1_mat <- expr_transpose[, pc1_gene$gene_id]
+pc1_mat[1:2, 1:5]
+pc2_mat <- expr_transpose[, pc2_gene$gene_id]
+pc2_mat[1:2, 1:5]
+# need data frame as input for the rest of the models
+df_pc1 <- as.data.frame(expr_transpose[, pc1_gene$gene_id])
+df_pc1[1:2, 1:5]
+df_pc2 <- as.data.frame(expr_transpose[, pc2_gene$gene_id])
+df_pc2[1:2, 1:5]
+
+
+
+## Define function to assess predictions ##
+assess.prediction <- function(truth,predicted) {
+  # exclude NA values from predicted and truth variables
+  predicted = predicted[! is.na(truth)]
+  truth = truth[! is.na(truth)]
+  truth = truth[! is.na(predicted)]
+  predicted = predicted[! is.na(predicted)]
+  # print the total number of cases that are not NA
+  cat("Total cases that are not NA: ",length(truth),"\n",sep="")
+  # print the correct predictions or accuracy
+  cat("Correct predictions (accuracy): ",sum(truth==predicted), "(",signif(sum(truth==predicted)*100/length(truth),3),"%)\n",sep="")
+  # calculate the true positive rate, true negative rate, positive predictive value,
+  # false discovery rate, and false positive rate
+  TP = sum(truth==1 & predicted==1)
+  TN = sum(truth==0 & predicted==0)
+  FP = sum(truth==0 & predicted==1)
+  FN = sum(truth==1 & predicted==0)
+  # calculate the total number of positive and negative cases
+  P = TP+FN
+  N = FP+TN
+  # print the true positive rate, true negative rate, positive predictive value,
+  # false discovery rate, and false positive rate.
+  # report results in percentage (hence 100*) and 3 decimal places
+  cat("TPR (sensitivity)=TP/P: ", signif(100*TP/P,3),"%\n",sep="")
+  cat("TNR (specificity)=TN/N: ", signif(100*TN/N,3),"%\n",sep="")
+  cat("PPV (precision)=TP/(TP+FP): ", signif(100*TP/(TP+FP),3),"%\n",sep="")
+  cat("FDR (false discovery)=1-PPV: ", signif(100*FP/(TP+FP),3),"%\n",sep="")
+  cat("FPR =FP/N=1-TNR: ", signif(100*FP/N,3),"%\n",sep="")
+}
+
+```
+<br>
+
+## Logistic Regression
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+## Logistic Regression ##
+# takes in matrix array, not data frame
+# 1. Using the genes from PC1 results
+log_reg1 <- glm(outcome ~ pc1_mat, family = "binomial")
+as.numeric(predict(log_reg1, type = "response") > 0.5)
+assess.prediction(outcome, as.numeric(predict(log_reg1, type = "response") > 0.5))
+
+
+# 2. Using the top 20 most significant p-values from the t-test expression data results
+log_reg2 <- glm(outcome ~ pc1_mat + pc2_mat, family = "binomial", na.action = "na.exclude") 
+as.numeric(predict(log_reg2, type = "response") >0.5)
+assess.prediction(outcome, as.numeric(predict(log_reg2, type = "response") >0.5))
+
+# load package
+library(pROC)
+
+# get predicted probabilities, not 0/1 classification
+log_reg1_probs <- predict(log_reg1, type = "response")
+# create ROC curve
+roc_logreg1 <- roc(outcome, log_reg1_probs)
+plot(roc_logreg1, col = "#2E86C1", lwd = 3, main = "ROC Curve - Logistic Regression")
+# add AUC to plot
+auc_logreg1 <- auc(roc_logreg1)
+legend("bottomright", legend = paste("AUC=", round(auc_logreg1, 3)), col = "#2E86C1", lwd=3)
+
+```
+<br>  
+**Discussion:**  
+The first model perfectly classified all 144 samples using the genes from PC1 without misclassifications. Adding the second set of genes from PC2 into the second model did not change performance, since the first one was already perfect. This suggests that the genes driving PC1 already capture the main variance that distinguishes between normal vs. tumor states. Since the PCA already showed clear separation between tumor and normal groups -- meaning the underlying biology is strongly separable -- so a simple linear model like logistic regression might indeed perform perfectly on this dataset. 
+<br>
+<br>  
+
+## Neural Network
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+library(neuralnet)
+
+# use functions to conveniently use tilde (~) to perform neural network analysis
+expand.formula = function(f,data=NULL) {
+  f.str = deparse(f)
+  if ( grepl("\\.$",f.str)[1] ) {
+    if ( is.null(data) ) { stop("Shortcut formula ~. requires a dataframe") }
+  } else {
+    return(f)
+  }
+  dependent.name = sub("\\s*~.*","",f.str)
+  n = names(data) 
+  n = n[ n != dependent.name ]
+  rhs = paste(n,collapse=" + ")
+  f.str = sub("\\.$",rhs,f.str)
+  f = as.formula(f.str,env=environment(f))
+  return(f)
+}
+
+neuralnet.fx = function(f,data,...) {
+  f = expand.formula(f,data)
+  f.str = deparse(f)
+  f.str = paste(f.str,collapse="")
+  dependent.name = sub("\\s*~.*","",f.str)
+  if ( ! dependent.name %in% names(data) ) {
+    dependent.data = get(dependent.name,envir=environment(f))
+    data=cbind(dependent.data,data)
+    names(data)[1] = dependent.name
+  }
+  has.na = apply(data,1,function(x) { any(is.na(x)) } )
+  data = data[! has.na,,drop=F]
+  if ( is.factor( data[,dependent.name] ) ) {
+    data[,dependent.name] = as.numeric(as.vector(data[,dependent.name]))
+  }
+  neuralnet(f,data,...)
+}
+
+# Perform neural net analysis
+# using the top 20 genes from PC1
+nnet1 <- neuralnet.fx(outcome ~ ., data = df_pc1, hidden=5, linear.output=FALSE)
+assess.prediction(outcome, as.numeric(compute(nnet1, df_pc1)$net.result[,1] >0.5))
+# using the top 20 genes from PC1 + PC2
+nnet2 <- neuralnet.fx(outcome ~ ., data = df_pc1 + df_pc2, hidden=5, linear.output=FALSE)
+assess.prediction(outcome, as.numeric(compute(nnet2, df_pc1 + df_pc2)$net.result[,1] >0.5))
+
+
+# add ROC curve
+# raw probabilities
+nnet_pred <- as.numeric(compute(nnet1, df_pc1)$net.result[,1])
+roc_nnet <- roc(outcome, nnet_pred)
+plot(roc_nnet, col = "#E74C3C", lwd = 3, main = "ROC Curve - Neural Network")
+auc_nnet <- auc(roc_nnet)
+legend("bottomright", legend = paste("AUC =", round(auc_nnet, 3)), col = "#E74C3C", lwd = 3)
+
+```
+<br>  
+**Discussion:**  
+Both models achieved near-perfect classification (99.3% accuracy), meaning only 1 sample was misclassified out of 144 total. The neural network performs comparably to logistic regression. The first model, using only the 20 genes from PC1, had 100% sensitivity meaning all tumor samples were correctly identified, while specificity = 98.6% where one normal sample was misclassified as tumor. This means that the model slightly overpredicted the tumor, but still very accurate overall. In the second model, using both genes from PC1 + PC2, showed 98.6% sensitivity where one tumor was missed this time. The addition of PC2 genes slightly changed the model's boundary, and it did not improve the performance, suggesting that PC1 genes alone are highly discriminative for the outcome. Overall, the neural network confirmed the robustness of these genes as predictors.  
+<br>
+<br>
+  
+## Support Vector Machine
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+library(e1071)
+
+# define the predict function
+predict_svm = function(M,newdata,...) {
+  if (inherits(M,"svm") && ! is.null(newdata)) {
+    has.na = apply(newdata,1,function(x) any(is.na(x)) )
+    has.data = which(! has.na);
+    has.na = which( has.na)
+    pred = stats::predict(M,newdata[has.data,,drop=F],...)
+    pred.with.na = pred[1]
+    pred.with.na[ has.data ] = pred
+    pred.with.na[ has.na ] = NA
+    pred.with.na 
+  } else {
+    stats::predict(M,newdata,...)  }  }
+
+# perform SVM based on various kernels
+svm1 <- svm(outcome ~ ., df_pc1, kernel="linear", cost=1)
+assess.prediction(outcome, predict(svm1, df_pc1))
+
+svm2 <- svm(outcome ~ ., df_pc1, kernel="polynomial", degree=3)
+assess.prediction(outcome, predict(svm2, df_pc1))
+
+svm3 <- svm(outcome ~ ., df_pc1, kernel="radial")
+assess.prediction(outcome, predict(svm3, df_pc1))
+
+svm4 <- svm(outcome ~ ., df_pc1, kernel="radial", gamma=1)
+assess.prediction(outcome, predict(svm4, df_pc1,))
+
+svm5 <- svm(outcome ~ ., df_pc1, kernel="radial", gamma=0.1)
+assess.prediction(outcome, predict(svm5, df_pc1))
+
+
+## create ROC curve and AUC
+# Ensure binary outcome = 0/1 → convert to factor
+df_pc1_svm <- data.frame(df_pc1, outcome = factor(outcome, levels = c(0, 1)))
+# get predictive probabilities
+svm3.1 <- svm(outcome ~., df_pc1_svm, kernel="radial", probability = TRUE)
+svm_pred <- predict(svm3.1, df_pc1, probability = TRUE)
+# extract probability of the positive class (tumor)
+svm_prob <- attr(svm_pred, "probabilities")[,2]
+
+# create ROC
+roc_svm <- roc(outcome, svm_prob)
+# get AUC
+auc_svm <- auc(roc_svm)
+# create plot
+plot(roc_svm,
+     col = "red",
+     lwd = 3,
+     main = paste("ROC Curve - SVM (Radial default Gamma) with AUC=", round(auc_svm, 3))
+     )
+
+```
+<br>  
+**Discussion:**  
+SVM results using linear, radial with default gamma, and radial with gamma=0.1, yielded the same result of 99.3% accuracy. 
+SVM performance is consistent with previous models (logistic, NN). The gene expression data are strongly discriminative, requiring minimal model complexity. The best model using kernel = radial at gamma = 1, achieves perfect separation but should be validated with cross-validation or an external test set to ensure it’s not overfitting. The gene expression pattern defined by PC1 genes already forms a straight boundary that separates tumor and normal samples. The results of the performance equality using radial kernels indicates that the nonlinear flexibility isn’t necessary, but doesn’t hurt either. The fact that accuracy remains unchanged suggests that even smooth decision surfaces can still separate the two classes well, another sign that the classes are robustly separable.  
+There is a slight drop in accuracy to 97.9% with polynomial kernel, with a small loss in sensitivity (~97%) -- this suggests that adding polynomial complexity did not help. The polynomial kernel introduces higher-order terms, creating curved decision boundaries; However, as we have seen with other kernels, the data doesn't need polynomial transformation because high performance is already achieved with linear separation. On the other hand, the radial kernel model with gamma=1 achieved a perfect classification. Increasing the gamma allows the kernel to form tighter, more complex boundaries around data points.  
+The small gain achieved from 99.3% to 100% suggest that the underlying biological signal is largely linear, not non-linear and complex.  
+<br>
+<br>
+  
+## Random Forest
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=8, fig.width=12, results='show', cache=FALSE}
+library(randomForest)
+
+cross.validate=function(predictor,formula,data=NULL,
+                        method="random", N=1000, n.out=5,...) {
+  if ( is.null(data) ) { stop("data must be specified") }
+  f.str = deparse(formula)
+  dependent.name = sub("\\s*~.*","",f.str)
+  if ( ! dependent.name %in% names(data) ) {
+    dependent.data = get(dependent.name,envir=environment(formula))
+    data=cbind(dependent.data,data)
+    names(data)[1] = dependent.name
+  } else {
+    ind = match(dependent.name,names(data))
+    data = cbind( data[,ind,drop=F],data[,-ind,drop=F] ) }
+  truth = data[,dependent.name]
+  truth = truth[0]
+  prediction=numeric()
+  for ( i in 1:N ) {
+    leave.out = sample(nrow(data),size=n.out)
+    training.data = data[-leave.out,,drop=F]
+    test.data = data[leave.out,,drop=F]
+    predictor$train(formula , data=training.data,...)
+    pred=predictor$predict(test.data[,-1,drop=F])
+    truth[ (length(truth)+1):(length(truth)+n.out) ] =
+      test.data[,dependent.name]
+    prediction = c(prediction, pred) }
+  list(truth=truth,prediction=prediction)  }
+
+
+do.check=function(data,model) {
+  if ( is.null(data) ) { stop("New data must be specified") }
+  if ( is.null(model) ) {
+    stop("The model has not been trained yet!") } }
+
+
+# perform random forest analysis
+rf1 <- randomForest(outcome ~ ., df_pc1, mtry=20, importance=TRUE, na.action="na.exclude")
+rf1
+
+rf2 <- randomForest(outcome ~ ., df_pc1+df_pc2, importance=TRUE, na.action="na.exclude")
+rf2
+
+
+# create ROC curve and get AUC
+# predict probabilities (not classes)
+rf1_prob <- predict(rf1, type = "prob")[,2]
+# compute ROC
+roc_rf1 <- roc(outcome, rf1_prob)
+# get AUC
+auc_rf1 <- auc(roc_rf1)
+# plot the ROC curve
+plot(roc_rf1,
+     col = "red",
+     lwd = 2,
+     main = "ROC Curve - Random Forest",
+     legacy.axes = TRUE)
+legend("bottomright",
+       legend = paste0("AUC=", auc_rf1))
+
+```
+<br>
+**Discussion:**  
+For the first RF model, setting mtry=20 means that all the genes in PC1 were randomly tried at each split. The resulting Out-of-Bag (OOB) error is 2.08%, meaning the model misclassifies 2 out of 100 samples during internal validation. Sensitivity, specificity, and overall accuracy is excellent ~98%. Both classes, tumor vs. normal, are being predicted very accurately. The genes from PC1 alone capture nearly all the discriminative variance between tumor and normal samples. Therefore, the model is robust, highly accurate, and well-calibrated.  
+Adding the genes from PC2 did not improve performance and instead increased the OOB error to 11.1%, possibly due to less discriminative features thereby diluting the strong signal set by PC1. RF seems to be sensitive to weakly correlated predictors, and the broader feature space reduced clarity in the class separation. The first model is therefore the preferred model — highly accurate, low OOB error, and interpretable through feature importance.
+<br>
+<br>
+  
+## Cross-Validation of Logistic Regression Model  
+  
+The logistic regression model achieved perfect (100%) accuracy. To check for overfitting, the code below will perform cross-validation.  
+  
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=12, results='show', cache=FALSE}
+library(e1071)
+
+do.check=function(data,model) {
+  if ( is.null(data) ) { stop("New data must be specified") }
+  if ( is.null(model) ) {
+    stop("The model has not been trained yet!")
+  } }
+
+
+##Logistic Regression Predictor##
+predictor.LR = list(
+  model = NULL,
+  train = function(f,data,...) {
+    predictor.LR$model <<- glm(f, data,
+                               family="binomial",na.action="na.exclude",...)  },
+  predict=function(newdata=NULL) {
+    do.check(newdata,predictor.LR$model)
+    as.numeric(
+      predict(predictor.LR$model,newdata,type="response") > 0.5
+    ) } )
+
+
+##Cross-validation Function##
+cross.validate=function(predictor, formula, data=NULL,
+                        method="random", N=1000, n.out=5,...) {
+  if (is.null(data)) { stop("data must be specified") }
+  f.str = deparse(formula)
+  dependent.name = sub("\\s*~.*", "", f.str)
+  if (!dependent.name %in% names(data)) {
+    dependent.data = get(dependent.name, envir=environment(formula))
+    data = cbind(dependent.data, data)
+    names(data)[1] = dependent.name
+  } else {
+    ind = match(dependent.name, names(data))
+    data = cbind(data[, ind, drop=F], data[, -ind, drop=F])
+  }
+  truth = data[, dependent.name]
+  truth = truth[0]
+  prediction = numeric()
+  for (i in 1:N) {
+    leave.out = sample(nrow(data), size=n.out)
+    training.data = data[-leave.out, , drop=F]
+    test.data = data[leave.out, , drop=F]
+    predictor$train(formula, data=training.data, ...)
+    pred = predictor$predict(test.data[,-1, drop=F])
+    truth[(length(truth)+1):(length(truth)+n.out)] = test.data[, dependent.name]
+    prediction = c(prediction, pred)
+  }
+  list(truth=truth, prediction=prediction)
+}
+
+
+##Logistic Regression Cross-validation using df_pc1 dataset##
+set.seed(123)
+
+# Train and test within the same data (initial fit)
+predictor.LR$train(outcome ~ . , df_pc1[1:20])
+assess.prediction(outcome, predictor.LR$predict(df_pc1[1:20]))
+
+# Cross-validation
+cv.LR=cross.validate(predictor.LR, outcome ~ . , df_pc1[1:20])
+assess.prediction(cv.LR$truth,cv.LR$prediction)
+
+```
+<br>
+**Discussion:**  
+The logistic regression model perfectly classified all 144 samples, both tumor and normal samples. This is *apparent* accuracy and perfect performance can be a sign of overfitting, especially with high-dimensional gene expression data. Cross-validation was performed and repeated randomly 1000 times with 5 hold-out samples, for a total 5000 predictions. The model achieved 93.5% accuracy, which is a sign that the model did slightly overfit. 
