@@ -1,0 +1,566 @@
+---
+title: "NKipuw_Homework1"
+author: "Neshita Kipuw"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    fig_caption: yes
+    code_folding: hide
+    number_sections: true
+  pdf_document:
+    toc: true
+vignette: >
+    %\VignetteIndexEntry{Text}
+    %\usepackage[utf8]{inputenc}
+    %\VignetteEngine{knitr::rmarkdown}
+fontsize: 15pt
+editor_options: 
+  chunk_output_type: console
+---
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: auto !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+body {
+text-align: justify}
+</style>
+
+```{r library, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+library(limma)
+library(ggplot2)
+library(dplyr)
+library(reshape2)
+```
+
+# Question 1
+
+## Creating a function to calculate the mean of a numeric vector, then compare to R's built-in mean() function.
+
+### Create a function
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+#### Create a function to calculate the mean of numeric vector####
+calc_mean <- function(x) {
+  if(!is.numeric(x)){
+    stop("Input must be a numeric vector.")
+  }
+  
+  #### take the sum of all the numeric vector####
+  sum <- 0
+  for (i in 1:length(x)) {
+    sum <- sum +x[i]
+  }
+  
+  ####calculate the mean ####
+  mean <- sum / length(x)
+  
+  return(mean)
+}
+```
+
+### Obtain five random (integer) numbers between 1-20
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+#### Get 5 random numbers between 1 and 20 ####
+random_num <- sample(1:20, 5)
+random_num
+```
+
+### Execute the function with the five random numbers generated
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+#### Run the function ####
+calc_mean(random_num)
+```
+
+### Compare the result with R's built-in mean() function
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+#### Compare to R's built-in mean function ####
+mean(random_num)
+```
+
+# Question 2
+
+## 2a. Explain the code: what it does, what is printed/not, and why
+
+### The code below creates a matrix of 3 rows x 3 columns dimension. The values are integers from 1-9 and are arranged by column, because R defaults to filling in each row per column order to fill matrices. Since there is no specific command to print after the creation of the matrix, a successful run of this code will not print anything.
+
+```{r 2a-1, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+mat <- matrix(1:9, nrow = 3, ncol = 3)
+```
+
+### The code below will look for the index of the maximum number in the matrix. Because of the order of the matrix, the maximum number is 9 and it is found in the ninth index, therefore R prints the index.
+
+```{r 2a-2, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+which.max(mat)
+```
+
+### The purpose of the code: which.max(as.data.frame(mat)), is to look for the index of the maximum number/value in a data frame. However, when run the result prints an error message: *Error in which.max(as.data.frame(mat)): 'list' object cannot be coerced to type 'double'*, because the matrix is not a data frame. The function which.max() only works with vectors, so it won't work for a data frame.
+
+### The code: mat[1:9,] , is asking to subset the matrix from rows 1-9 and all of the columns. When run, the result prints an error message: *Error in mat[1:9, ]: subscript out of bounds*. This is because the matrix only has 3 rows and it cannot call upon non-existent rows.
+
+### The code: mat[,1:9], is asking to subset the matrix from columns 1-9 and all of the rows. When run, the result is an error message: *Error in mat[,1:9]: subscript out of bounds*. This is because the matrix only has 3 columns and similarly with the code above it cannot call upon non-existent columns.
+
+
+## 2b. Explain the code: what it does, what is printed/not, and why
+
+### The code below creates a matrix of 3 rows x 3 columns dimension. The values are integers from 1-5, two sevens, and two NA (which is missing value). The argument *byrow=T* forces the matrix to be filled per row instead of the R default of filling in per column order. The result prints the matrix and its values in row x column dimension, because the code specifies a print() function.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+m <- matrix(c(1:5,NA,7,7,NA), nrow=3,ncol=3,byrow=T); print(m)
+```
+
+### The code below assigns a null object to the vector, numbers, and initiates an empty vector which will be populated in the next line of code inside a for loop. There is no command to print results, so the command will run in the background and nothing is printed.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+
+numbers <- NULL
+```
+
+### The code is a for loop that iterates over values *i* from 1-4 sequentially. Inside the loop, the code takes the i-th row of matrix *m*, and assigns is to the temporary variable *temp*. However, the matrix only consists of 3 rows and will execute the loop for i=1-3 until it 1=4 which will try to access a non-existent row. The result is an error message printed, *Error in m[i, ] : subscript out of bounds*. This causes the program to exit the loop without executing the last line of code, which was intended to append the values in *temp* to the *numbers* vector at each iteration of the loop.
+
+```{r, eval=FALSE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+for(i in 1:4){
+  temp <- m[i,]
+  numbers <- c(numbers, temp)
+}
+```
+
+# Question 3
+
+The following RNAseq data set is obtained from GEO accession **GSE266550**. *Note*: code is hidden due to extensive lines of code.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source = "fold-hide", fig.height=5, fig.width=8, results='show', cache=FALSE}
+GEODataDownload <- function(DS, gpl, gsm, PlateAnnotInfo, GenerateMetaData, Technology){
+  library(DESeq2); library(limma); library(data.table)
+  if(Technology == "Array"){
+    gset <- getGEO(DS)
+    if(length(gset) > 1) idx <- grep(gpl, attr(gset, "names")) else idx <- 1
+    gset <- gset[[idx]]
+    fvarLabels(gset) <- make.names(fvarLabels(gset))
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up raw names ####
+    sml <- c()
+    for(i in 1:nchar(gsms)){ sml[i] <- substr(gsms,i,i)}
+    ex <- exprs(gset)
+    qx <- as.numeric(quantile(ex, c(0., 0.25, 0.5, 0.75, 0.99, 1.0), na.rm=T))
+    LogC <- (qx[5] > 100) ||
+      (qx[6]-qx[1] > 50 && qx[2] > 0) ||
+      (qx[2] > 0 && qx[2] < 1 && qx[4] < 2)
+    if(LogC){ ex[which(ex <= 0)] <- NaN
+    exprs(gset) <- log2(ex) }
+    sml <- paste("G", sml, sep="")
+    f1 <- as.factor(sml)
+    gset$description2 <- f1
+    design <- model.matrix(~description2 + 0, gset)
+    colnames(design) <- levels(f1)
+    fit <- lmFit(gset, design)
+    cont.matrix <- makeContrasts(G1-G0, levels = design)
+    fit2 <- contrasts.fit(fit, cont.matrix)
+    fit2 <- eBayes(fit2, 0.01)
+    tT <- topTable(fit2, adjust="fdr", sort.by = "B", number = 25000000000)
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("ID", "logFC", "P.Value", "adj.P.Val")))
+    ex2$ID <- as.character(ex2$ID)
+    #### annotate with gene names ####
+    plat <- PlateAnnotInfo[GPLID == gpl,][,!"GPLID", with = FALSE]
+    if(nrow(plat) == 0){ print(paste("There is no annotation information available for", gpl)) }
+    plat$ID <- as.character(plat$ID)
+    plat <- plat[!duplicated(plat$ID),]
+    ex2 <- merge(plat, ex2, by = "ID")
+    ex2$ID <- as.character(ex2$ID)
+    exraw <- data.table(ex)
+    exraw$ID <- as.character(rownames(ex))
+    #### annotate raw data with gene names ####
+    ex2 <- merge(ex2, exraw, by = "ID")
+    #### Generate Meta Data ####
+    Pdat <- pData(gset)
+    #### Add Meta data ####
+    Pdat <- as.data.table(Pdat)
+    return(list(Data = ex2, MetaData = Pdat))
+  }
+  
+  if(Technology == "RNAseq"){
+    ACC <- paste("acc=", DS, sep = "")
+    file <- paste("file=", DS, "_raw_counts_GRCh38.p13_NCBI.tsv.gz", sep = "")
+    comp <- gsub(" ", "", gsm)
+    comp <- gsub(",", "", comp)
+    gsms <- paste0(comp)
+    #### Set up DEG names ####
+    urld <- "https://www.ncbi.nlm.nih.gov/geo/download/?format=file&type=rnaseq_counts"
+    path <- paste(urld, ACC, file, sep="&");
+    tbl <- as.matrix(data.table::fread(path, header=T, colClasses="integer"), rownames="GeneID")
+    exraw <- tbl 
+    apath <- paste(urld, "type=rnaseq_counts", "file=Human.GRCh38.p13.annot.tsv.gz", sep="&")
+    annot <- data.table::fread(apath, header=T, quote="", stringsAsFactors=F, data.table=F)
+    rownames(annot) <- annot$GeneID
+    sml <- strsplit(gsms, split="")[[1]]
+    sel <- which(sml != "X")
+    sml <- sml[sel]
+    tbl <- tbl[ ,sel]
+    gs <- factor(sml)
+    groups <- make.names(c("Ctrl", "Tx"))
+    levels(gs) <- groups
+    sample_info <- data.frame(Group = gs, row.names = colnames(tbl))
+    keep <- rowSums( tbl >= 10 ) >= min(table(gs))
+    tbl <- tbl[keep, ]
+    ds <- DESeqDataSetFromMatrix(countData=tbl, colData=sample_info, design= ~Group)
+    ds <- DESeq(ds, test="Wald", sfType="poscount")
+    r <- results(ds, contrast=c("Group", groups[2], groups[1]), alpha=0.05, pAdjustMethod ="fdr")
+    tT <- r[order(r$padj)[1:length(r$padj)],]
+    tT <- merge(as.data.frame(tT), annot, by=0, sort=F)
+    tT <- subset(tT, select=c("GeneID","padj","pvalue","lfcSE","stat","log2FoldChange","baseMean","Symbol","Description"))
+    #### subset ####
+    ex2 <- data.table(subset(tT, select=c("GeneID", "Symbol", "Description", "log2FoldChange", "pvalue", "padj")))
+    #### Adjust column names ####
+    setnames(ex2, c("GeneID", "Symbol", "Description"), c("ENTREZID", "SYMBOL", "GENENAME"))
+    #### Get Raw data ####
+    GeneID <- as.integer(rownames(exraw))
+    exraw <- as.data.table(exraw)
+    #### Update column names ####
+    exraw$ENTREZID <- GeneID
+    #### merge FC and raw data together ####
+    mer <- merge(ex2, exraw, by = "ENTREZID")
+    return(mer)
+  }
+}
+#### Execute the GEODataDownload function and obtain the RNAseq data set ####
+RNAseqData <- GEODataDownload(DS = "GSE220979",
+                              gpl = "GPL24676",
+                              gsm = "0011",
+                              PlateAnnotInfo = "Only needed if the data was generated using MicroArrays",
+                              GenerateMetaData = "Only needed if the data was generated using MicroArrays",
+                              Technology = "RNAseq")
+data.table(head(as.data.frame(RNAseqData),10), filter = 'top', options = list(pageLength = 10, scrollX = TRUE, scrollY = "400px", autoWidth = TRUE))
+
+```
+
+## Question 3.a-b. Save downloaded file into the current working directory under a new name, and reload into R environment.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+####Define file path to save into working directory####
+getwd()
+file_path <- "~/RBIF111"
+
+####Save the RNAseq data set to the working directory####
+saveRDS(RNAseqData, file = "RNAseq_GSE220979_1.rds")
+
+####Reload the file into R environment####
+RNAseq_GSE220979_1 <- readRDS("RNAseq_GSE220979_1.rds")
+print(head(RNAseq_GSE220979_1))
+```
+
+## Question 3.c. Add a new column called Subset_Comparison for sample annotation
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+####Create a new data frame to group the samples by ctrl vs. Tx ####
+new_df <- data.frame(
+  Sample_ID = c("GSM6833488", "GSM6833489", "GSM6833490", "GSM6833491"),
+  group = c("Ctrl", "Ctrl", "Tx_GFP-Dexa", "Tx_CD9-Dexa")
+)
+
+#### Import libraries & Convert data set to long format to merge the sample group####
+library(dplyr)
+library(reshape2)
+RNAseq_GSE220979_2 <- melt(RNAseq_GSE220979_1, id.vars = c("ENTREZID", "SYMBOL", "GENENAME", "log2FoldChange", "pvalue", "padj"), 
+                           variable.name = "Sample_ID", value.name = "Expression")
+
+####Merge the sample group to the long format data set and append the new column #### 
+RNAseq_GSE220979_2 <- merge(RNAseq_GSE220979_2, new_df, by = "Sample_ID", all.x = TRUE)
+
+####Append the new column and use a placeholder value####
+RNAseq_GSE220979_2$Subset_Comparison <- "Unknown"
+
+####Annotate the samples with correct sample groups####
+RNAseq_GSE220979_2$Subset_Comparison <- ifelse(RNAseq_GSE220979_2$group == "Tx_GFP-Dexa", "low-CD9 Dexa Treated", 
+                                               ifelse(RNAseq_GSE220979_2$group == "Tx_CD9-Dexa", "high-CD9 Treated", "Control in DMSO"))
+
+####Check the resulting converted data set####
+print(head(RNAseq_GSE220979_2))
+print(tail(RNAseq_GSE220979_2))
+
+
+#### Get avg expression####
+avg_expression <- RNAseq_GSE220979_2 %>%
+  group_by(Sample_ID) %>%
+  summarise(avg_expression = mean(Expression, na.rm=TRUE))
+
+RNAseq_GSE220979_3 <- RNAseq_GSE220979_2 %>%
+  left_join(avg_expression, by = "Sample_ID")
+
+print(head(RNAseq_GSE220979_3))
+print(tail(RNAseq_GSE220979_3))
+
+RNAseq_GSE220979_3a <- RNAseq_GSE220979_3[,-1]
+RNAseq_GSE220979_4a <- dcast(RNAseq_GSE220979_3a, ENTREZID + SYMBOL + GENENAME + log2FoldChange + pvalue + padj + avg_expression ~ Subset_Comparison, value.var = "Expression")
+
+RNAseq_GSE220979_4 <- dcast(RNAseq_GSE220979_3, ENTREZID + SYMBOL + GENENAME + log2FoldChange + pvalue + padj + Subset_Comparison + avg_expression ~ Sample_ID, value.var = "Expression")
+
+```
+
+## Question 3.d. Calculate average gene expression level for each sample, then plot using Histogram, Boxplot, Stripchart, Stem-and-leaf, Dotchart, and Sorted in Ascending order.
+
+```{r i, echo=FALSE}
+#### i. Histogram of average gene expression levels for each sample ####
+hist(RNAseq_GSE220979_4a$avg_expression,
+     breaks = 20,
+     col = "skyblue",
+     main = paste("Histogram of Avg Expression by Sample"),
+     xlab = "Avg Expression", 
+     ylab="Frequency")
+```
+
+```{r ii, echo=FALSE}
+#### ii. Box plot of average gene expression levels for each sample ####
+boxplot(avg_expression ~ Subset_Comparison, data = RNAseq_GSE220979_3a, main= "Box plot of Avg Sample Expression", ylab= "Avg Expression")
+```
+
+```{r iii, echo=FALSE}
+#### iii. Strip chart of the average gene expression levels for each sample ####
+stripchart(RNAseq_GSE220979_3a$avg_expression, method = "jitter", col = "skyblue", pch = 19,
+           main = "Stripchart of Avg Sample Expression", xlab = "Average Value")
+
+```
+
+```{r iv, echo=FALSE}
+#### iv. Stem and leaf chart of the average gene expression levels for each sample ####
+stem(RNAseq_GSE220979_3a$avg_expression)
+
+```
+
+```{r v, echo=FALSE}
+#### v. Dot chart of the average gene expression levels for each sample ####
+plot(RNAseq_GSE220979_3a$avg_expression, type="p", main="Dot chart of Avg Sample Expression", ylab="Avg Expression")
+
+```
+
+```{r vi, echo=FALSE}
+#### Vi. Sorted dot chart of the average gene expression levels for each sample ####
+plot(sort(RNAseq_GSE220979_3a$avg_expression),type="p", main="Sorted Dot chart of Avg Sample Expression", ylab="Avg Expression")
+
+```
+
+## Question 3.e. Calculate average gene expression levels for each gene.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+#### Calculate the mean for each gene ####
+gene_avgexpress <- aggregate(Expression ~ ENTREZID + SYMBOL + Subset_Comparison, data = RNAseq_GSE220979_3a, FUN = mean)
+print(head(gene_avgexpress))
+```
+
+```{r, echo=FALSE}
+#### i. Histogram of average gene expression levels for each gene ####
+hist(gene_avgexpress$Expression, breaks = "Sturges", col = "skyblue", main="Avg Gene Expression", ylab="Frequency", xlab="Avg Expression")
+```
+
+```{r, echo=FALSE}
+#### ii. Box plot of average gene expression levels for each gene ####
+boxplot(Expression ~ Subset_Comparison, data = gene_avgexpress, main= "Box plot of Avg Gene Expression", ylab= "Avg Expression")
+```
+
+```{r, echo=FALSE}
+#### iii. Sorted dot chart (in ascending order) of the average gene expression levels for each gene ####
+plot(sort(gene_avgexpress$Expression),type="p", main="Sorted Dot chart of Avg Gene Expression", ylab="Avg Expression")
+
+```
+
+## Question 3.f. Find genes with the highest and the lowest expression levels across all samples – capture their names and characteristic expression levels. Plot distributions of their expression levels across all samples using all visualization techniques practiced above.
+
+```{r, echo=FALSE}
+####Split data by group####
+split_data <- split(RNAseq_GSE220979_3a, RNAseq_GSE220979_3a$Subset_Comparison)
+
+####create function to find high and low values, then print the results####
+for(group in names(split_data)) {
+  grp_data <- split_data[[group]]
+  
+  #Find the highest value
+  max_val <- grp_data[which.max(grp_data$Expression), ]
+  
+  #Find the lowest value
+  min_val <- grp_data[which.min(grp_data$Expression), ]
+  
+  #Print the results
+  cat("Group:", group, "\n")
+  cat("Gene with the highest value:", max_val$GENENAME, "; Symbol:", max_val$SYMBOL, "; Expression =", max_val$Expression, "\n")
+  cat("Gene with the lowest value:", min_val$GENENAME, "; Symbol:", min_val$SYMBOL, "; Expression =", min_val$Expression, "\n\n")
+}
+
+```
+
+## Question 3.g. Create a volcano plot of the differential expression analysis that was performed on the downloaded data and describe how to interpret this plot. Use ggplot2!
+
+A volcano plot is a visualization tool used in gene expression analysis to identify genes that have undergone significant changes in expression between two experimental conditions. By plotting the log2 fold change on the x-axis and the negative log10 p-value on the y-axis, volcano plots allow quick assessment of both the magnitude and statistical significance of gene expression differences.
+
+Genes located in the upper right quadrant of the plot represent genes that have been significantly up-regulated (increased expression) with high statistical significance. Conversely, genes in the upper left quadrant indicate significant down-regulation (decreased expression). Genes near the center of the plot have minimal changes in expression.
+
+The addition of threshold lines to the volcano plot can further aid in the interpretation of results. Horizontal lines can be used to define a p-value cutoff, while vertical lines can be used to specify a fold change threshold. Genes that exceed both thresholds are considered to be the most biologically relevant.
+
+```{r, echo=FALSE}
+#### Load the necessary library ####
+library(ggplot2)
+
+#### Create the volcano plot ####
+ggplot(RNAseq_GSE220979_3a, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  geom_point(aes(color = pvalue < 0.05 & abs(log2FoldChange) > 0.5), 
+             alpha = 0.6, size = 2) +
+  scale_color_manual(values = c("grey", "magenta"),
+                     labels = c("Below threshold", "Up-/Downregulated"),
+                     name = "Significance") +  
+  theme_minimal() +
+  labs(title = "Volcano Plot", 
+       x = "Log2 Fold Change", 
+       y = "-Log10 P-value") +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "blue") +  # Fold change threshold
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue")  # P-value threshold
+
+```
+
+## Question 3.h. Create a MA plot of the data using the ggplot2 plotting package. Describe how to interpret this plot.
+
+An MA plot is a graphical tool used to visualize and interpret gene expression data. By plotting the average expression level (A) on the x-axis and the log fold change (M) on the y-axis, MA plots provide a clear representation of the relationship between gene expression and differential expression between two conditions.
+
+Genes located far from the horizontal line at M = 0 indicate significant changes in expression, with points above the line representing up-regulation and points below the line representing down-regulation. The distance from the line corresponds to the magnitude of the fold change, with larger distances indicating more significant changes.
+
+The distribution of points on an MA plot can reveal trends in the data set. For example, if there are more points above the M = 0 line, it may suggest a general trend toward up-regulation in the treatment condition. Additionally, clusters of points in certain areas can indicate groups of co-regulated genes or shared biological pathways.
+
+MA plots can also help identify potential biases in the data. For example, if the points show a systematic shift in M values as a function of A (e.g., more down-regulated genes at low expression levels), it may indicate that lowly expressed genes are not reliably measured. This type of bias, known as a "low-expression bias," can affect the interpretation of differential expression results.
+
+```{r, echo=FALSE}
+#### Create the MA plot ####
+ggplot(RNAseq_GSE220979_3a, aes(x = avg_expression, y = log2FoldChange)) +
+  geom_point(alpha = 0.6) + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "blue") +  # M = 0 line
+  labs(title = "MA Plot", 
+       x = "Average Expression (A)", 
+       y = "Log2 Fold Change (M)") +
+  theme_minimal()
+
+```
+
+# Question 4
+
+## Loading the downloaded data from UCI into R, and clean up the data set.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+#### Get the working directory and set to a new working directory to obtain the data ####
+getwd()
+setwd("~/RBIF111/wk1/iris")
+
+#### Read in the data as CSV and name all the columns ####
+iris_data <- read.csv("iris.data", header = FALSE)
+names(iris_data) <- c("sepal_length (cm)", "sepal_width (cm)", "petal_length (cm)", "petal_width (cm)", "class")
+View(iris_data)
+```
+
+## Create a function to calculate the amount of missing values, the mean, median, and standard deviation.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+#### Create the function #### 
+stats_1 <- function(df) {
+  #### check for numeric values in columns ####
+  cols_num <- sapply(df, is.numeric)
+  #### take only numeric columns ####
+  df_num <- df[, cols_num]
+  
+  #### calculate the statistics of numeric columns ####
+  stats_1a <- data.frame(
+    column = names(df_num),
+    missing_val = sapply(df_num, function(x) sum(is.na(x))),
+    mean = sapply(df_num, function(x) mean(x, na.rm=TRUE)),
+    median = sapply(df_num, function(x) median(x, na.rm=TRUE)),
+    std_dev= sapply(df_num, function(x) sd(x, na.rm=TRUE))
+  )
+  return(stats_1a)
+}
+
+#### Execute the function ####
+stats_num <- stats_1(iris_data)
+print("Numeric Stats")
+print(stats_num)
+```
+
+## Visualizing the numerical statistical results as box plots.
+
+```{r numerical_stats, echo=FALSE}
+#### Load the necessary libraries ####
+library(ggplot2)
+library(reshape2)
+
+####Create function to make box plots####
+num_boxplots <- function(df) {
+  #### Identify numeric columns####
+  num_cols <- sapply(df, is.numeric)
+  df_num <- df[, num_cols, drop = FALSE]
+  
+  #### Reshape the data to a long format, instead of a wide format, for ggplot####
+  df_long <- reshape2::melt(df_num)
+  
+  #### Create box plots for all numeric columns####
+  ggplot(df_long, aes(x = variable, y = value)) +
+    geom_boxplot() +
+    theme_minimal() +
+    labs(title = "Boxplots of Numeric Columns", x = "Columns", y = "Values") +
+    ####Rotate x-axis labels####
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))  
+}
+
+####Execute the function####
+num_boxplots(iris_data)
+```
+
+## Calculate the total amount of categorical values in the data set.
+
+```{r, eval=TRUE, echo=TRUE, message=FALSE, warning=FALSE, class.source="fold-show", fig.height=5, fig.width=8, results='show', cache=FALSE}
+#### Get the column containing categorical values ####
+col_categ <- iris_data$class
+#### Count the amount for each category ####
+categ_counts <- table(col_categ, useNA = "ifany")
+
+#### Print the results####
+print("Count of categorical values")
+print(categ_counts)
+```
+
+## In the case of categorical values, it's helpful to use a bar graph to dinstinguish the total count for each category because it's an integer value and not a statistical result. The code below will visualize the categorical count as a bar graph instead of a box plot.
+
+```{r categorical_stats, echo=FALSE}
+#### Load the necessary libraries ####
+library(ggplot2)
+
+#### Function to create bar graph for categories ####
+bar_graph <- function(df, col_name) {
+  categ_counts <- table(df[[col_name]], useNA="ifany")
+  
+  ####convert table to data frame for ggplot####
+  categ_df <- as.data.frame(categ_counts)
+  colnames(categ_df) <- c("Category", "Count")
+  
+  ####make the bar plot####
+  ggplot(categ_df, aes(x=Category, y=Count)) +
+    geom_bar(stat = "identity", fill="skyblue") +
+    theme_minimal() +
+    labs(title = paste("Bar graph of", col_name), x="Class Category", y="Total Count") +
+    theme(axis.text.x = element_text(angle=45, hjust=1))
+}
+
+####Execute the function####
+bar_graph(iris_data, "class")
+```
